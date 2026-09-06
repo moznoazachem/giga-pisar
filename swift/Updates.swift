@@ -10,13 +10,13 @@
 
 import Foundation
 
-let RELEASES_PAGE = "https://github.com/moznoazachem/giga/releases/latest"
-private let LATEST_API = "https://api.github.com/repos/moznoazachem/giga/releases/latest"
+let RELEASES_PAGE = "https://github.com/moznoazachem/giga-pisar/releases/latest"
+private let LATEST_API = "https://api.github.com/repos/moznoazachem/giga-pisar/releases/latest"
 
 /// Манифесты по площадкам, в порядке опроса.
 private let MANIFESTS = [
     "https://gitflic.ru/project/moznoazachem/giga/blob/raw?file=update.json&branch=main",
-    "https://raw.githubusercontent.com/moznoazachem/giga/main/update.json",
+    "https://raw.githubusercontent.com/moznoazachem/giga-pisar/main/update.json",
 ]
 
 /// Свежий выпуск: номер версии и ссылки на zip в порядке предпочтения.

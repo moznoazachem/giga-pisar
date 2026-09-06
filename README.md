@@ -32,7 +32,7 @@ no companion server.
 - `install.sh` — puts the model files into `~/.giga/model`
 
 The core is a Swift port of `giga_core.py` from
-[Giga Pisar for Linux](https://github.com/moznoazachem/giga-pisar).
+[Giga Pisar for Linux](https://github.com/moznoazachem/giga-pisar-cli).
 Both are run on the same recordings by `scripts/сверка-swift.py` and must
 produce identical text.
 
@@ -204,7 +204,7 @@ MIT
 - `install.sh` — кладёт файлы модели в `~/.giga/model`
 
 Ядро — перенос на Swift питоновского `giga_core.py` из
-[Гига Писаря для Linux](https://github.com/moznoazachem/giga-pisar).
+[Гига Писаря для Linux](https://github.com/moznoazachem/giga-pisar-cli).
 Оба гоняются на одних записях скриптом `scripts/сверка-swift.py` и должны
 выдавать один и тот же текст.
 

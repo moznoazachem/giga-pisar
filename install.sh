@@ -3,7 +3,16 @@
 # распознавание живёт внутри самого приложения — ни питона, ни ffmpeg.
 set -e
 
-MODEL_URL="https://github.com/moznoazachem/giga-pisar/releases/latest/download/gigaam-v3-onnx-int8.tar.gz"
+# Не мак? Значит, человек пришёл по старой ссылке из README консольной версии
+# (репозиторий переименован в giga-pisar-cli). Отправляем его к правильному
+# установщику, а не кладём ему маковскую модель.
+if [ "$(uname -s)" != "Darwin" ]; then
+    echo "Это установщик для macOS. Консольная версия для Linux теперь здесь:"
+    echo "  https://github.com/moznoazachem/giga-pisar-cli"
+    exec bash -c "$(curl -fsSL https://raw.githubusercontent.com/moznoazachem/giga-pisar-cli/main/install.sh)"
+fi
+
+MODEL_URL="https://github.com/moznoazachem/giga-pisar-cli/releases/download/v1.0/gigaam-v3-onnx-int8.tar.gz"
 DEST=~/.giga/model
 
 echo "== Giga Pisar: модель распознавания =="

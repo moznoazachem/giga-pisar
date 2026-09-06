@@ -182,7 +182,7 @@ def find_model_dir(extra: str = "") -> str:
             return path
     raise FileNotFoundError(
         "Не нашёл модель. Укажите папку через PISAR_MODEL_DIR или --model-dir.\n"
-        "Скачать: https://github.com/moznoazachem/giga-pisar/releases"
+        "Скачать: https://github.com/moznoazachem/giga-pisar-cli/releases"
     )
 
 

@@ -680,7 +680,7 @@ final class App: NSObject, NSApplicationDelegate {
 
     func downloadSpeechModel() {
         guard modelDL == nil else { return }
-        let url = URL(string: "https://github.com/moznoazachem/giga-pisar/releases/latest/download/gigaam-v3-onnx-int8.tar.gz")!
+        let url = URL(string: "https://github.com/moznoazachem/giga-pisar-cli/releases/download/v1.0/gigaam-v3-onnx-int8.tar.gz")!
         statusItem.button?.imagePosition = .imageLeft
         modelDL = Downloader(onPercent: { [weak self] p in
             self?.statusItem.button?.title = " ↓\(p)%"
