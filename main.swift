@@ -778,18 +778,23 @@ final class App: NSObject, NSApplicationDelegate {
         let dest = "/Applications/Giga Pisar.app"
         guard path != dest else { return }
 
-        let translocated = path.contains("/AppTranslocation/")
+        // Откуда запущено, по-человечески: не путь, а место.
+        let from: String
+        if path.contains("/AppTranslocation/") {
+            from = L("прямо из архива или «Загрузок»", "straight from the archive or Downloads")
+        } else if path.hasPrefix("/Volumes/") {
+            from = L("из образа диска", "from the disk image")
+        } else {
+            let folder = ((path as NSString).deletingLastPathComponent as NSString).lastPathComponent
+            from = L("из папки «\(folder)»", "from the “\(folder)” folder")
+        }
         let a = NSAlert()
-        a.messageText = L("Перенести Гига Писарь в «Программы»?", "Move Giga Pisar to Applications?")
+        a.messageText = L("Перенести Гига Писаря в Программы?", "Move Giga Pisar to Applications?")
         a.informativeText = L(
-            translocated
-                ? "Приложение открыто из временной карантинной копии — так бывает при запуске прямо из «Загрузок». Разрешения macOS прилипают к месту на диске, поэтому будут слетать при каждом запуске. Я перенесу себя в «Программы» и перезапущусь оттуда."
-                : "Приложение запущено из «\(path)». Чтобы разрешения не слетали, ему лучше жить в «Программах». Я перенесу себя туда и перезапущусь.",
-            translocated
-                ? "The app is running from a temporary quarantine copy — that happens when it's launched straight from Downloads. macOS ties permissions to the location on disk, so they'd break on every launch. I'll move myself to Applications and relaunch from there."
-                : "The app is running from “\(path)”. To keep permissions stable it should live in Applications. I'll move myself there and relaunch.")
-        a.addButton(withTitle: L("Перенести и перезапустить", "Move and relaunch"))
-        a.addButton(withTitle: L("Позже", "Later"))
+            "Приложение запущено \(from). Из Программ оно работает надёжнее: macOS привязывает разрешения к месту на диске. Перенесу и перезапущусь, это секунда.",
+            "The app was launched \(from). It runs more reliably from Applications: macOS ties permissions to the location on disk. I'll move over and relaunch, it takes a second.")
+        a.addButton(withTitle: L("Перенести", "Move"))
+        a.addButton(withTitle: L("Не сейчас", "Not now"))
         guard a.runModal() == .alertFirstButtonReturn else { return }
 
         let fm = FileManager.default

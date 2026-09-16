@@ -42,52 +42,59 @@ final class UpdateWindow: NSObject, NSWindowDelegate {
     }
 
     private func build() {
+        // Раскладка как у «Обновления ПО»: значок слева, справа колонка —
+        // заголовок, статус, полоска во всю ширину колонки, кнопка под её
+        // правым краем. Всё на констрейнтах, чтобы ничего не расползалось.
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 150))
+
         let icon = NSImageView(image: NSApp.applicationIconImage)
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.widthAnchor.constraint(equalToConstant: 56).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 56).isActive = true
-
-        title.font = .boldSystemFont(ofSize: 14)
-        status.font = .systemFont(ofSize: 12)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        title.font = .boldSystemFont(ofSize: 13)
+        title.lineBreakMode = .byTruncatingTail
+        status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
-
+        status.lineBreakMode = .byTruncatingTail
         bar.style = .bar
         bar.minValue = 0
         bar.maxValue = 100
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        bar.widthAnchor.constraint(equalToConstant: 300).isActive = true
-
         cancelButton = NSButton(title: L("Отменить", "Cancel"), target: self, action: #selector(cancel))
         cancelButton.bezelStyle = .rounded
+        cancelButton.controlSize = .regular
 
-        let text = NSStackView(views: [title, status, bar])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 6
-        text.setCustomSpacing(10, after: status)
+        for v in [icon, title, status, bar, cancelButton] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(v)
+        }
+        let side: CGFloat = 20
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: side),
+            icon.topAnchor.constraint(equalTo: root.topAnchor, constant: side),
+            icon.widthAnchor.constraint(equalToConstant: 64),
+            icon.heightAnchor.constraint(equalToConstant: 64),
 
-        let top = NSStackView(views: [icon, text])
-        top.orientation = .horizontal
-        top.alignment = .top
-        top.spacing = 14
+            title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 16),
+            title.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -side),
+            title.topAnchor.constraint(equalTo: root.topAnchor, constant: side + 2),
 
-        let buttons = NSStackView(views: [cancelButton])
-        buttons.orientation = .horizontal
-        buttons.alignment = .trailing
+            status.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            status.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+            status.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
 
-        let root = NSStackView(views: [top, buttons])
-        root.orientation = .vertical
-        root.alignment = .trailing
-        root.spacing = 14
-        root.edgeInsets = NSEdgeInsets(top: 18, left: 20, bottom: 16, right: 20)
+            bar.leadingAnchor.constraint(equalTo: title.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+            bar.topAnchor.constraint(equalTo: status.bottomAnchor, constant: 10),
 
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 150),
+            cancelButton.trailingAnchor.constraint(equalTo: title.trailingAnchor),
+            cancelButton.topAnchor.constraint(equalTo: bar.bottomAnchor, constant: 14),
+            cancelButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
+        ])
+
+        let w = NSWindow(contentRect: root.frame,
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        w.title = "Giga Pisar"
+        w.title = L("Обновление", "Update")
         w.isReleasedWhenClosed = false
         w.delegate = self
         w.contentView = root
-        w.setContentSize(root.fittingSize)
         window = w
     }
 
