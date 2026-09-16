@@ -110,6 +110,8 @@ final class App: NSObject, NSApplicationDelegate {
 
     /// Номер свежей версии с зеркал, если она новее нашей, и её ссылки.
     var updateAvailable: String?
+    let updateWindow = UpdateWindow()
+    weak var updMenuItem: NSMenuItem?   // «Качаю версию…» с живыми процентами
     var updateDownloads: [URL] = []
 
     /// Последняя удачная диктовка — страховка на случай «курсор был не в поле».
@@ -463,7 +465,13 @@ final class App: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
 
         // версия и обновления — одним компактным пунктом
-        if let upd = updateAvailable {
+        if SelfUpdate.inProgress, let upd = SelfUpdate.version {
+            let item = mkItem(L("Качаю версию \(upd)…", "Downloading version \(upd)…"),
+                              sub: L("нажми, чтобы посмотреть ход дела", "click to see progress"),
+                              icon: "arrow.down.circle", action: #selector(startSelfUpdate))
+            menu.addItem(item)
+            updMenuItem = item
+        } else if let upd = updateAvailable {
             menu.addItem(mkItem(L("Доступна версия \(upd) — обновить",
                                   "Version \(upd) Available — Update"),
                                 icon: "arrow.down.circle", action: #selector(startSelfUpdate)))
@@ -525,27 +533,46 @@ final class App: NSObject, NSApplicationDelegate {
 
     /// Само: скачает выпуск, проверит подпись, подменит себя и перезапустится.
     @objc func startSelfUpdate() {
+        // уже идёт — не запускаем второе, а показываем, как идёт первое
+        if SelfUpdate.inProgress, let ver = SelfUpdate.version {
+            updateWindow.show(version: ver)
+            return
+        }
         guard !updateDownloads.isEmpty, let ver = updateAvailable else {
             openReleases() // выпуск без архива — только руками
             return
         }
-        guard !SelfUpdate.inProgress else { return }
-        // подсказка висит под нашей иконкой в строке меню, где и проценты,
-        // а не посреди чужого экрана
-        let underIcon = statusItem.button?.window.map {
-            NSPoint(x: $0.frame.midX - 120, y: $0.frame.minY - 2)
+        updateWindow.onCancel = { [weak self] in
+            SelfUpdate.cancel()
+            self?.statusItem.button?.title = ""
+            self?.buildMenu()
         }
-        Toast.shared.show(L("Скачиваю версию \(ver)… Ход дела — тут, в строке меню. Диктовка пока работает как обычно.",
-                            "Downloading \(ver)… Progress is right here in the menu bar. Dictation keeps working meanwhile."),
-                          seconds: 6, near: underIcon)
-        SelfUpdate.run(zips: updateDownloads, version: ver, report: { [weak self] s in
-            // ход дела рядом с иконкой: «↓ 43%», потом «проверяю…»
-            self?.statusItem.button?.imagePosition = .imageLeft
-            self?.statusItem.button?.title = " " + s
+        updateWindow.show(version: ver)
+        updateWindow.downloading(percent: 0)
+        buildMenu() // пункт «Доступна версия…» превращается в «Качаю…»
+        SelfUpdate.run(zips: updateDownloads, version: ver, report: { [weak self] stage in
+            guard let self else { return }
+            switch stage {
+            case .downloading(let p):
+                self.updateWindow.downloading(percent: p)
+                // и рядом со значком в строке меню, где чёлки нет
+                self.statusItem.button?.imagePosition = .imageLeft
+                self.statusItem.button?.title = " ↓ \(p)%"
+                self.updMenuItem?.attributedTitle = self.menuAttrTitle(
+                    L("Качаю версию \(ver)… \(p)%", "Downloading version \(ver)… \(p)%"),
+                    sub: L("нажми, чтобы посмотреть ход дела", "click to see progress"))
+            case .verifying:
+                self.updateWindow.onCancel = nil // дальше отменять нечего
+                self.updateWindow.busy(L("Проверяю подпись…", "Verifying the signature…"))
+                self.statusItem.button?.title = " " + L("проверяю…", "verifying…")
+            }
         }, ready: { [weak self] in
+            self?.updateWindow.busy(L("Перезапускаюсь…", "Relaunching…"))
             self?.quitForUpdateWhenIdle()
         }, fail: { [weak self] reason in
             self?.statusItem.button?.title = ""
+            self?.updateWindow.hide()
+            self?.buildMenu()
             let a = NSAlert()
             a.messageText = L("Обновиться само не получилось", "Self-update didn't work")
             a.informativeText = L("Причина: \(reason).\nМожно скачать вручную со страницы выпуска — это просто замена приложения.",
@@ -560,6 +587,8 @@ final class App: NSObject, NSApplicationDelegate {
     /// посреди диктовки или распознавания не дёргаемся — ждём покоя.
     func quitForUpdateWhenIdle() {
         guard state == .idle else {
+            updateWindow.busy(L("Дождусь конца диктовки и перезапущусь…",
+                                "Waiting for the dictation to finish, then relaunching…"))
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
                 self?.quitForUpdateWhenIdle()
             }
@@ -577,6 +606,12 @@ final class App: NSObject, NSApplicationDelegate {
     /// silent — фоновая проверка: молчит, если новостей нет, и об одной и той
     /// же версии напоминает окном только один раз (дальше — пункт в меню).
     func checkUpdates(silent: Bool) {
+        // Обновление уже качается: предлагать его ещё раз бессмысленно,
+        // вместо этого показываем, как оно идёт.
+        if SelfUpdate.inProgress, let ver = SelfUpdate.version {
+            if !silent { updateWindow.show(version: ver) }
+            return
+        }
         fetchLatestRelease { [weak self] info in
             DispatchQueue.main.async {
                 guard let self else { return }

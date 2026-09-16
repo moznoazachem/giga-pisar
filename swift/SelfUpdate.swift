@@ -27,10 +27,18 @@ final class Downloader: NSObject, URLSessionDownloadDelegate {
         self.onPercent = onPercent
         self.onDone = onDone
         super.init()
-        session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        // Зеркало, которое молчит полминуты, считаем мёртвым и идём к
+        // следующему. Без этого зависший GitFlic держал обновление вечно,
+        // а каждое новое «Обновить» молча глоталось.
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 30
+        session = URLSession(configuration: cfg, delegate: self, delegateQueue: nil)
     }
 
     func download(_ url: URL) { session.downloadTask(with: url).resume() }
+
+    /// Остановить и забыть. onDone после этого НЕ зовётся.
+    func cancel() { session.invalidateAndCancel() }
 
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData: Int64, totalBytesWritten: Int64,
@@ -59,6 +67,7 @@ final class Downloader: NSObject, URLSessionDownloadDelegate {
 
     func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error {
+            if (error as NSError).code == NSURLErrorCancelled { return } // это мы сами
             onDone(nil, L("не скачалось: \(error.localizedDescription)",
                           "download failed: \(error.localizedDescription)"))
             s.finishTasksAndInvalidate()
@@ -67,8 +76,25 @@ final class Downloader: NSObject, URLSessionDownloadDelegate {
 }
 
 enum SelfUpdate {
+    /// Что сейчас происходит; показывается в окне хода дела и в меню.
+    enum Stage {
+        case downloading(Int)   // проценты
+        case verifying
+    }
+
     private(set) static var inProgress = false
+    /// Версия, которая сейчас ставится (пока inProgress).
+    private(set) static var version: String?
     private static var downloader: Downloader? // держим, пока качает
+
+    /// Остановить скачивание. После проверки подписи отменять уже нечего:
+    /// подмена ждёт только нашего выхода.
+    static func cancel() {
+        downloader?.cancel()
+        downloader = nil
+        inProgress = false
+        version = nil
+    }
 
     /// Команда подписи бандла («CXX972W555») или nil, если подписи нет.
     static func teamID(of path: String) -> String? {
@@ -106,7 +132,7 @@ enum SelfUpdate {
     /// report(надпись) — что показать человеку; fail(причина) — беда;
     /// оба зовутся на главной очереди, при беде НИЧЕГО не тронуто.
     static func run(zips: [URL], version: String,
-                    report: @escaping (String) -> Void,
+                    report: @escaping (Stage) -> Void,
                     ready: @escaping () -> Void,
                     fail: @escaping (String) -> Void) {
         guard !inProgress else { return }
@@ -114,8 +140,9 @@ enum SelfUpdate {
             fail(L("у выпуска нет файла", "the release has no file")); return
         }
         inProgress = true
+        Self.version = version
         func bail(_ m: String) {
-            DispatchQueue.main.async { inProgress = false; downloader = nil; fail(m) }
+            DispatchQueue.main.async { inProgress = false; Self.version = nil; downloader = nil; fail(m) }
         }
 
         let dest = Bundle.main.bundlePath
@@ -134,7 +161,7 @@ enum SelfUpdate {
 
     /// Пробует зеркала по очереди: сорвалось с одного — тихо идём к следующему.
     private static func download(_ zips: [URL], at i: Int, version: String, dest: String,
-                                 report: @escaping (String) -> Void,
+                                 report: @escaping (Stage) -> Void,
                                  ready: @escaping () -> Void,
                                  bail: @escaping (String) -> Void) {
         guard i < zips.count else {
@@ -142,7 +169,7 @@ enum SelfUpdate {
             return
         }
         downloader = Downloader(
-            onPercent: { p in report("↓ \(p)%") },
+            onPercent: { p in report(.downloading(p)) },
             onDone: { file, error in
                 downloader = nil
                 guard let file else {
@@ -151,7 +178,7 @@ enum SelfUpdate {
                              report: report, ready: ready, bail: bail)
                     return
                 }
-                DispatchQueue.main.async { report(L("проверяю…", "verifying…")) }
+                DispatchQueue.main.async { report(.verifying) }
                 DispatchQueue.global(qos: .userInitiated).async {
                     install(zipFile: file, version: version, dest: dest, ready: ready, bail: bail)
                 }
