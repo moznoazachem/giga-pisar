@@ -17,8 +17,13 @@ final class UpdateWindow: NSObject, NSWindowDelegate {
     var onCancel: (() -> Void)?
 
     func show(version: String) {
+        show(title: L("Обновление до версии \(version)", "Updating to version \(version)"))
+    }
+
+    /// То же окно для любой долгой загрузки (модель распознавания).
+    func show(title text: String) {
         if window == nil { build() }
-        title.stringValue = L("Обновление до версии \(version)", "Updating to version \(version)")
+        title.stringValue = text
         cancelButton.isHidden = onCancel == nil
         NSApp.activate(ignoringOtherApps: true)
         if window?.isVisible != true { window?.center() }

@@ -111,6 +111,7 @@ final class App: NSObject, NSApplicationDelegate {
     /// Номер свежей версии с зеркал, если она новее нашей, и её ссылки.
     var updateAvailable: String?
     let updateWindow = UpdateWindow()
+    let modelWindow = UpdateWindow()    // загрузка модели распознавания
     weak var updMenuItem: NSMenuItem?   // «Качаю версию…» с живыми процентами
     var updateDownloads: [URL] = []
 
@@ -189,8 +190,16 @@ final class App: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(true, forKey: "wavePinBugFixed2")
             WavePanel.pinned = nil
         }
+        var brainWasDownloading = false
         Brain.shared.onChange = { [weak self] in
             guard let self else { return }
+            let downloading = Brain.shared.downloadingId != nil
+            if brainWasDownloading, !downloading, Brain.shared.chosenModel.map(Brain.shared.downloaded) == true,
+               !UserDefaults.standard.bool(forKey: "brainHelpShown") {
+                UserDefaults.standard.set(true, forKey: "brainHelpShown")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.showBrainHelp() }
+            }
+            brainWasDownloading = downloading
             if let id = Brain.shared.downloadingId,
                let m = BRAIN_MODELS.first(where: { $0.id == id }),
                let item = self.dlMenuItem {
@@ -407,6 +416,8 @@ final class App: NSObject, NSApplicationDelegate {
         menu.addItem(mkHeader(L("Мозг Писаря", "Pisar's Brain"),
                               sub: L("причёсывает надиктованный текст", "polishes dictated text")))
         if Brain.shared.engineAvailable {
+            menu.addItem(mkItem(L("Что это и как пользоваться…", "What It Is and How to Use It…"),
+                                icon: "questionmark.circle", action: #selector(showBrainHelp)))
             let off = mkItem(L("Выключен", "Off"), icon: "circle.slash",
                              action: #selector(pickBrain(_:)))
             off.representedObject = "off"
@@ -544,7 +555,6 @@ final class App: NSObject, NSApplicationDelegate {
         }
         updateWindow.onCancel = { [weak self] in
             SelfUpdate.cancel()
-            self?.statusItem.button?.title = ""
             self?.buildMenu()
         }
         updateWindow.show(version: ver)
@@ -555,22 +565,17 @@ final class App: NSObject, NSApplicationDelegate {
             switch stage {
             case .downloading(let p):
                 self.updateWindow.downloading(percent: p)
-                // и рядом со значком в строке меню, где чёлки нет
-                self.statusItem.button?.imagePosition = .imageLeft
-                self.statusItem.button?.title = " ↓ \(p)%"
                 self.updMenuItem?.attributedTitle = self.menuAttrTitle(
                     L("Качаю версию \(ver)… \(p)%", "Downloading version \(ver)… \(p)%"),
                     sub: L("нажми, чтобы посмотреть ход дела", "click to see progress"))
             case .verifying:
                 self.updateWindow.onCancel = nil // дальше отменять нечего
                 self.updateWindow.busy(L("Проверяю подпись…", "Verifying the signature…"))
-                self.statusItem.button?.title = " " + L("проверяю…", "verifying…")
             }
         }, ready: { [weak self] in
             self?.updateWindow.busy(L("Перезапускаюсь…", "Relaunching…"))
             self?.quitForUpdateWhenIdle()
         }, fail: { [weak self] reason in
-            self?.statusItem.button?.title = ""
             self?.updateWindow.hide()
             self?.buildMenu()
             let a = NSAlert()
@@ -703,8 +708,8 @@ final class App: NSObject, NSApplicationDelegate {
         let a = NSAlert()
         a.messageText = L("Остался один шаг — модель распознавания",
                           "One last piece — the speech model")
-        a.informativeText = L("Это «уши» Писаря: 204 МБ, качается один раз и переживает все обновления. Ход дела будет виден в строке меню.",
-                              "Pisar's ears: a one-time 204 MB download that survives every update. Progress shows in the menu bar.")
+        a.informativeText = L("Это «уши» Писаря: 204 МБ, качается один раз и переживает все обновления. Ход дела будет виден в отдельном окне.",
+                              "Pisar's ears: a one-time 204 MB download that survives every update. Progress shows in its own window.")
         a.addButton(withTitle: L("Скачать", "Download"))
         a.addButton(withTitle: L("Позже", "Later"))
         guard a.runModal() == .alertFirstButtonReturn else { return }
@@ -716,15 +721,23 @@ final class App: NSObject, NSApplicationDelegate {
     func downloadSpeechModel() {
         guard modelDL == nil else { return }
         let url = URL(string: "https://github.com/moznoazachem/giga-pisar-cli/releases/download/v1.0/gigaam-v3-onnx-int8.tar.gz")!
-        statusItem.button?.imagePosition = .imageLeft
+        // Раньше проценты дописывались к значку в строке меню, значок
+        // раздувался и на маках с чёлкой прятался за ней: «поставил, а
+        // значка нет». Теперь окно с полоской, значок не трогаем.
+        modelWindow.onCancel = { [weak self] in
+            self?.modelDL?.cancel()
+            self?.modelDL = nil
+        }
+        modelWindow.show(title: L("Модель распознавания", "Speech model"))
+        modelWindow.downloading(percent: 0)
         modelDL = Downloader(onPercent: { [weak self] p in
-            self?.statusItem.button?.title = " ↓\(p)%"
+            self?.modelWindow.downloading(percent: p)
         }, onDone: { [weak self] file, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.modelDL = nil
-                self.statusItem.button?.title = ""
                 guard let file else {
+                    self.modelWindow.hide()
                     Toast.shared.show(L("Модель не скачалась (\(error ?? "сеть")) — попробуй позже, окно появится снова при запуске",
                                         "Model download failed (\(error ?? "network")) — try again later, the prompt returns on launch"))
                     return
@@ -736,7 +749,8 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     private func unpackSpeechModel(_ file: URL) {
-        statusItem.button?.title = " …"
+        modelWindow.onCancel = nil
+        modelWindow.busy(L("Распаковываю…", "Unpacking…"))
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let dest = NSHomeDirectory() + "/.giga/model"
             try? FileManager.default.createDirectory(atPath: dest, withIntermediateDirectories: true)
@@ -752,7 +766,7 @@ final class App: NSObject, NSApplicationDelegate {
             try? FileManager.default.removeItem(at: file)
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.statusItem.button?.title = ""
+                self.modelWindow.hide()
                 if ok {
                     self.loadModel()
                     Toast.shared.show(L("Модель на месте — зажимай \(currentHotkey().title) и диктуй!",
@@ -842,6 +856,29 @@ final class App: NSObject, NSApplicationDelegate {
     @objc func pickChipsMode(_ sender: NSMenuItem) {
         Brain.shared.chipsEnabled = (sender.representedObject as? String) == "menu"
         buildMenu()
+    }
+
+    /// Инструкция к Мозгу: по пункту меню и один раз сама, когда модель
+    /// докачалась, потому что именно в этот момент человек не знает, что дальше.
+    @objc func showBrainHelp() {
+        let a = NSAlert()
+        a.messageText = L("Мозг Писаря", "Pisar's Brain")
+        a.informativeText = L("Нейронка внутри приложения: причёсывает, сокращает и переводит текст по твоей команде. Работает на этом маке, в интернет ничего не уходит.",
+                              "A neural net inside the app: it tidies, shortens and translates text on your command. Runs on this Mac, nothing goes online.")
+        a.accessoryView = bulletsView(header: L("Как пользоваться", "How to use it"), lines: uiIsRussian ? [
+            "Голосом: в конце диктовки скажи «Писарь, исправь», «Писарь, сократи» или «Писарь, переведи на английский»",
+            "Менюшкой: после вставки у курсора появляются 1 причесать · 2 сократить · 3 перевести, жми цифру. Включается в этом же меню",
+            "Над готовым текстом: выдели его, зажми \(currentHotkey().title) и скажи, что сделать («сделай короче», «переведи»). Результат встанет вместо выделенного, ⌘Z вернёт как было",
+            "GigaChat: родной русский, 6,5 ГБ, маки от 16 ГБ. Qwen: лёгкая, 2,5 ГБ, русский неродной, но аккуратная",
+            "Первый ответ ждёт секунд десять: нейронка поднимается с диска, дальше быстро",
+        ] : [
+            "By voice: end your dictation with “Pisar, fix this”, “Pisar, make it shorter” or “Pisar, translate to English”",
+            "By menu: after pasting, 1 tidy up · 2 shorten · 3 translate appear at the cursor, press the digit. Turned on in this same menu",
+            "On existing text: select it, hold \(currentHotkey().title) and say what to do (“make it shorter”, “translate”). The result replaces the selection, ⌘Z brings it back",
+            "GigaChat: native Russian, 6.5 GB, Macs with 16 GB+. Qwen: light, 2.5 GB, non-native Russian but tidy",
+            "The first reply takes about ten seconds while the model loads from disk, then it's fast",
+        ], width: 360)
+        a.runModal()
     }
 
     @objc func pickBrain(_ sender: NSMenuItem) {

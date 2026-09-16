@@ -8,13 +8,15 @@ import AppKit
 
 /// Что изменилось в ЭТОЙ версии. Обновлять при каждом выпуске вместе с номером.
 let WHATS_NEW: [String] = uiIsRussian ? [
-    "VS Code, Cursor и другие программы на Electron: диктовка больше не ругается «курсор не в тексте», буфер возвращается",
-    "Рабочий стол Finder больше не принимается за текстовое поле",
-    "Убрано лишнее сообщение «Вставка не прошла»",
+    "Обновление и загрузка модели идут в своём окне с полоской, а не текстом у значка: значок больше не прячется за чёлкой",
+    "Окно первого запуска: у каждого разрешения своя кнопка, подсказка с тумблером, поле для первой диктовки",
+    "В меню Мозга появился пункт «Что это и как пользоваться»",
+    "Скачивание с сайта: образ .dmg, открыл и перетащил в Программы",
 ] : [
-    "VS Code, Cursor and other Electron apps: no more false “cursor wasn't in a text field”, the clipboard comes back",
-    "The Finder desktop is no longer mistaken for a text field",
-    "The spurious “paste didn't land” message is gone",
+    "Updates and the model download get their own progress window instead of text next to the icon: the icon no longer hides behind the notch",
+    "First-run window: a real button per permission, a hint with the toggle, a field to try dictation",
+    "Pisar's Brain menu now has “What it is and how to use it”",
+    "Download from the site as a .dmg: open and drag to Applications",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.
@@ -33,8 +35,12 @@ func parseNotes(_ raw: Any?) -> [String] {
 /// Плашка «Что нового в X» для NSAlert.accessoryView: мягкая подложка со
 /// скруглением, заголовок мелким полужирным, пункты с висячим маркером.
 func whatsNewView(version: String, notes: [String]) -> NSView? {
+    bulletsView(header: L("Что нового в \(version)", "What's new in \(version)"), lines: notes)
+}
+
+/// Та же плашка с любым заголовком и любыми пунктами (инструкция к Мозгу).
+func bulletsView(header headerText: String, lines notes: [String], width: CGFloat = 300) -> NSView? {
     guard !notes.isEmpty else { return nil }
-    let width: CGFloat = 300
     let pad: CGFloat = 12
 
     let stack = NSStackView()
@@ -43,7 +49,7 @@ func whatsNewView(version: String, notes: [String]) -> NSView? {
     stack.spacing = 5
     stack.translatesAutoresizingMaskIntoConstraints = false
 
-    let head = NSTextField(labelWithString: L("Что нового в \(version)", "What's new in \(version)"))
+    let head = NSTextField(labelWithString: headerText)
     head.font = .systemFont(ofSize: 11, weight: .semibold)
     head.textColor = .secondaryLabelColor
     stack.addArrangedSubview(head)
