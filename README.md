@@ -14,6 +14,14 @@ leaves your Mac.
 **Hold a key → speak → release → punctuated text appears wherever your cursor is.**
 In any application.
 
+### Download
+
+**[Download for macOS](https://github.com/moznoazachem/giga-pisar/releases/latest/download/GigaPisar.dmg)** (dmg, 32 MB, macOS 13.4+, notarized by Apple).
+Open the image, drag Giga Pisar to Applications, launch. On first launch it
+offers to download the speech model itself (204 MB, once). That is the only
+file you need; everything else on the Releases page is sources and the model
+archive the app fetches on its own.
+
 ### What's inside
 
 Recognition runs **inside the app itself**. No Python, no ffmpeg, no Homebrew,
@@ -66,7 +74,7 @@ open "/Applications/Giga Pisar.app"
 
 Building needs Xcode or Command Line Tools. Nothing else.
 
-Or grab the ready-made app from [Releases](../../releases): download, drag to
+Or grab the ready-made app: [GigaPisar.dmg](https://github.com/moznoazachem/giga-pisar/releases/latest/download/GigaPisar.dmg), drag to
 Applications, open — on first launch it offers to download the speech model
 itself (204 MB, once; it survives every update in ~/.giga/model).
 
@@ -185,6 +193,14 @@ MIT
 **Зажал клавишу → говоришь → отпустил → текст с пунктуацией появился там, где курсор.**
 В любом приложении.
 
+### Скачать
+
+**[Скачать для macOS](https://github.com/moznoazachem/giga-pisar/releases/latest/download/GigaPisar.dmg)** (dmg, 32 МБ, macOS 13.4+, нотаризовано Apple).
+Открыл образ, перетащил Гига Писаря в Программы, запустил. При первом запуске
+приложение само предложит скачать модель распознавания (204 МБ, один раз).
+Это единственный нужный файл: остальное на странице релизов, это исходники
+и архив модели, который приложение качает само.
+
 ### Что внутри
 
 Распознавание работает **внутри самого приложения**. Ни питона, ни ffmpeg,
@@ -238,7 +254,7 @@ open "/Applications/Giga Pisar.app"
 
 Для сборки нужен Xcode или Command Line Tools. Больше ничего ставить не надо.
 
-Либо возьми готовое приложение из [Releases](../../releases): скачал,
+Либо возьми готовое приложение: [GigaPisar.dmg](https://github.com/moznoazachem/giga-pisar/releases/latest/download/GigaPisar.dmg), скачал,
 перетащил в Программы, открыл — модель распознавания оно предложит скачать
 само (204 МБ, один раз; дальше она живёт в ~/.giga/model и переживает
 все обновления).

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="400" viewBox="0 0 660 400">
+  <defs>
+    <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="250" y1="0" x2="420" y2="0">
+      <stop offset="0" stop-color="#a8e063"/>
+      <stop offset="1" stop-color="#1fa03a"/>
+    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f7fbf5"/>
+      <stop offset="1" stop-color="#eef6ea"/>
+    </linearGradient>
+    <marker id="head" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#1fa03a"/>
+    </marker>
+  </defs>
+  <rect width="660" height="400" fill="url(#bg)"/>
+  <!-- волна снизу как на сайте -->
+  <g opacity="0.9">
+    <rect x="30" y="360" width="8" height="18" rx="4" fill="#a8e063"/>
+    <rect x="44" y="350" width="8" height="28" rx="4" fill="#8ad84c"/>
+    <rect x="58" y="340" width="8" height="38" rx="4" fill="#63cf62"/>
+    <rect x="72" y="352" width="8" height="26" rx="4" fill="#3fc39b"/>
+    <rect x="86" y="362" width="8" height="16" rx="4" fill="#00a08c"/>
+  </g>
+  <!-- стрелка -->
+  <rect x="250" y="181" width="150" height="8" rx="4" fill="url(#g)"/>
+  <polygon points="392,168 420,185 392,202" fill="#1fa03a"/>
+  <!-- подпись -->
+  <text x="330" y="312" text-anchor="middle" font-family="Onest, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#0d1512">Перетащи Гига Писаря в Программы</text>
+  <text x="330" y="338" text-anchor="middle" font-family="Onest, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="14" fill="#5b6b62">Потом открой из Программ: диктовка по правому ⌘</text>
+</svg>
