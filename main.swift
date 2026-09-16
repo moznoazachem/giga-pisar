@@ -205,7 +205,7 @@ final class App: NSObject, NSApplicationDelegate {
         buildMenu()
         loadModel()
         startKeyMonitors()
-        if !Onboarding.allGranted {
+        if !Onboarding.allGranted || Onboarding.demo != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 self?.onboarding.show()
             }
