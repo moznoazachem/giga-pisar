@@ -1,19 +1,21 @@
 {
-  "version": "3.6.1",
+  "version": "3.6.2",
   "downloads": [
-    "https://gitflic.ru/project/moznoazachem/giga/release/da46b7a1-0132-4f6f-b321-8c41f3b9caac/97583c2d-6b87-4b55-89e2-16e071078ebe/download",
-    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.6.1/GigaPisar-3.6.1.zip"
+    "https://gitflic.ru/project/moznoazachem/giga/release/d847118c-f6c9-4875-96d0-2142a270014f/5e9f574a-8382-4165-bec4-bc64b6f784c8/download",
+    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.6.2/GigaPisar-3.6.2.zip"
   ],
   "notes": {
     "ru": [
-      "VS Code, Cursor и другие программы на Electron: диктовка больше не ругается «курсор не в тексте», буфер возвращается",
-      "Рабочий стол Finder больше не принимается за текстовое поле",
-      "Убрано лишнее сообщение «Вставка не прошла»"
+      "Обновление и загрузка модели идут в своём окне с полоской, значок больше не прячется за чёлкой",
+      "Окно первого запуска: у каждого разрешения своя кнопка, подсказка с тумблером, поле для первой диктовки",
+      "В меню Мозга пункт «Что это и как пользоваться»",
+      "Скачивание с сайта: образ .dmg"
     ],
     "en": [
-      "VS Code, Cursor and other Electron apps: no more false “cursor wasn't in a text field”, the clipboard comes back",
-      "The Finder desktop is no longer mistaken for a text field",
-      "The spurious “paste didn't land” message is gone"
+      "Updates and the model download get their own progress window, the icon no longer hides behind the notch",
+      "First-run window: a real button per permission, a hint with the toggle, a field to try dictation",
+      "Pisar's Brain menu now has “What it is and how to use it”",
+      "Download from the site as a .dmg"
     ]
   }
 }
