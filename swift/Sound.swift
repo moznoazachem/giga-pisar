@@ -41,6 +41,28 @@ enum Sound {
     /// нет отдельной «немоты» и пришлось крутить ручку.
     private static var volumeBefore: Float32?
 
+    /// Тихо ли уже сейчас: немота включена или громкость на нуле. Если
+    /// человек сам сидит в тишине, трогать выход нельзя — иначе после
+    /// диктовки мы бы «вернули» ему звук, которого он не просил.
+    static var isSilent: Bool {
+        guard let dev = defaultOutput() else { return false }
+        var mute = address(kAudioDevicePropertyMute)
+        if AudioObjectHasProperty(dev, &mute) {
+            var value: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectGetPropertyData(dev, &mute, 0, nil, &size, &value) == noErr, value != 0 {
+                return true
+            }
+        }
+        var volume = address(kAudioDevicePropertyVolumeScalar)
+        guard AudioObjectHasProperty(dev, &volume) else { return false }
+        var current: Float32 = 1
+        var size = UInt32(MemoryLayout<Float32>.size)
+        guard AudioObjectGetPropertyData(dev, &volume, 0, nil, &size, &current) == noErr
+        else { return false }
+        return current == 0
+    }
+
     /// Приглушить или вернуть выход. Сперва пробуем честную «немоту»:
     /// её понимают встроенные динамики. Если устройство её не умеет
     /// (так ведут себя многие USB-карты и наушники), убираем громкость
