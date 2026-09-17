@@ -542,7 +542,9 @@ final class App: NSObject, NSApplicationDelegate {
 
     /// Приглушить звук на время диктовки, если это выбрано в меню.
     private func hushSound() {
-        guard Sound.muteWhileDictating else { return }
+        // Уже тихо — значит человек приглушил звук сам, и возвращать его
+        // после диктовки не наше дело. Не глушим, не запоминаем.
+        guard Sound.muteWhileDictating, !Sound.isSilent else { return }
         Sound.setMuted(true)
         soundHushed = true
     }
