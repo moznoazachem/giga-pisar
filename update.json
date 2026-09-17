@@ -1,21 +1,19 @@
 {
-  "version": "3.6.2",
+  "version": "3.6.4",
   "downloads": [
-    "https://gitflic.ru/project/moznoazachem/giga/release/d847118c-f6c9-4875-96d0-2142a270014f/5e9f574a-8382-4165-bec4-bc64b6f784c8/download",
-    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.6.2/GigaPisar-3.6.2.zip"
+    "https://gitflic.ru/project/moznoazachem/giga/release/711e5bef-faf9-49a3-b5c1-a6351d254c61/27c60ad0-700c-44f6-8a54-03f674b28292/download",
+    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.6.4/GigaPisar-3.6.4.zip"
   ],
   "notes": {
     "ru": [
-      "Обновление и загрузка модели идут в своём окне с полоской, значок больше не прячется за чёлкой",
-      "Окно первого запуска: у каждого разрешения своя кнопка, подсказка с тумблером, поле для первой диктовки",
-      "В меню Мозга пункт «Что это и как пользоваться»",
-      "Скачивание с сайта: образ .dmg"
+      "Новая галочка «Приглушать звук»: на время диктовки музыка затихает, потом громкость возвращается",
+      "Запущенное из «Загрузок» приложение при обновлении само переезжает в Программы",
+      "Мозг: если нейронка не запустилась, плашка говорит почему"
     ],
     "en": [
-      "Updates and the model download get their own progress window, the icon no longer hides behind the notch",
-      "First-run window: a real button per permission, a hint with the toggle, a field to try dictation",
-      "Pisar's Brain menu now has “What it is and how to use it”",
-      "Download from the site as a .dmg"
+      "New “Mute While Dictating” option: sound goes quiet while you dictate, then comes back",
+      "An app launched from Downloads moves itself to Applications when updating",
+      "Brain: if the model didn't start, the toast says why"
     ]
   }
 }
