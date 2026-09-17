@@ -87,6 +87,12 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
         return dir.path
     }
     func path(_ m: BrainModel) -> String { Self.modelsDir + "/" + m.file }
+    /// Сколько памяти займёт поднятая модель: файл целиком плюс контекст
+    /// и накладные llama.cpp (около 700 МБ при контексте 4096).
+    func memoryNeeded(_ m: BrainModel) -> UInt64 {
+        let size = (try? FileManager.default.attributesOfItem(atPath: path(m)))?[.size] as? UInt64 ?? 0
+        return size + 700 * 1_048_576
+    }
     /// Скачана целиком: файл на месте и весит как модель, а не как обрывок
     /// (меньше гигабайта у нейронки не бывает; обрывок llama-server не
     /// поднимет, и человек видел бы «Запускаю нейронку…» без конца).
@@ -346,6 +352,35 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
         // холодный старт — нейронку ещё надо поднять с диска (~10 секунд),
         // человек должен видеть, что происходит, а не гадать
         let cold = server?.isRunning != true || serverModelId != chosenId
+        // Перед холодным стартом смотрим, влезет ли модель в свободную
+        // память. Не влезет — macOS начнёт выгружать чужое на диск, и старт
+        // растянется на минуты. Лучше спросить заранее, чем молча висеть.
+        if cold, let m = chosenModel {
+            let need = memoryNeeded(m), free = Memory.available
+            if free < need {
+                DispatchQueue.main.async {
+                    let a = NSAlert()
+                    a.messageText = L("Памяти впритык", "Memory is tight")
+                    a.informativeText = L("Свободно \(Memory.gb(free)) ГБ, а \(m.name) нужно около \(Memory.gb(need)) ГБ. Нейронка всё равно запустится, но macOS будет выгружать другие программы на диск, и ждать можно несколько минут. Закрой тяжёлые программы и попробуй снова, или запускай так.",
+                                          "\(Memory.gb(free)) GB free, and \(m.name) needs about \(Memory.gb(need)) GB. It will still start, but macOS will swap other apps to disk and it may take minutes. Close heavy apps and try again, or go ahead anyway.")
+                    a.addButton(withTitle: L("Всё равно запустить", "Start anyway"))
+                    a.addButton(withTitle: L("Отмена", "Cancel"))
+                    if a.runModal() == .alertFirstButtonReturn {
+                        self.transformNow(body, command: command, mode: mode, cold: cold, done: done)
+                    } else {
+                        self.lastFailure = L("мало свободной памяти, запуск отменён",
+                                             "not enough free memory, start cancelled")
+                        done(nil)
+                    }
+                }
+                return
+            }
+        }
+        transformNow(body, command: command, mode: mode, cold: cold, done: done)
+    }
+
+    private func transformNow(_ body: String, command: String, mode: Mode, cold: Bool,
+                              done: @escaping (String?) -> Void) {
         ensureServer()
         scheduleIdleStop()
         let action = Self.actionLabel(command)
@@ -366,8 +401,8 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
             let sec = Int(Date().timeIntervalSince(started))
             if sec >= 5, sec % 5 == 0 {
                 DispatchQueue.main.async {
-                    Toast.shared.showSticky(L("Запускаю нейронку… \(sec) с (первый раз бывает до минуты)",
-                                              "Starting the brain… \(sec)s (the first time can take up to a minute)"))
+                    Toast.shared.showSticky(L("Запускаю нейронку… \(sec) с, память занята на \(Memory.usedPercent)%",
+                                              "Starting the brain… \(sec)s, memory \(Memory.usedPercent)% used"))
                 }
             }
             _ = self
