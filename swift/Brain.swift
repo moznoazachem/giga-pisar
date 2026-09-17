@@ -87,8 +87,12 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
         return dir.path
     }
     func path(_ m: BrainModel) -> String { Self.modelsDir + "/" + m.file }
+    /// Скачана целиком: файл на месте и весит как модель, а не как обрывок
+    /// (меньше гигабайта у нейронки не бывает; обрывок llama-server не
+    /// поднимет, и человек видел бы «Запускаю нейронку…» без конца).
     func downloaded(_ m: BrainModel) -> Bool {
-        FileManager.default.fileExists(atPath: path(m))
+        let size = (try? FileManager.default.attributesOfItem(atPath: path(m)))?[.size] as? Int64 ?? 0
+        return size > 1_000_000_000
     }
 
     // MARK: скачивание модели (с процентами и докачкой после обрывов)
@@ -181,6 +185,18 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
 
     private var server: Process?
     private var serverModelId: String?
+
+    /// Лог llama-server: ~/Library/Logs/Giga Pisar/brain.log, перезаписывается при запуске.
+    static var logPath: String {
+        NSHomeDirectory() + "/Library/Logs/Giga Pisar/brain.log"
+    }
+    /// Почему не вышло в последний раз, по-человечески; nil — причина неизвестна.
+    private(set) var lastFailure: String?
+    /// Текст для плашки: общая фраза плюс причина, если она известна.
+    func failureText(_ generic: String) -> String {
+        guard let why = lastFailure else { return generic }
+        return generic + ". " + why.prefix(1).uppercased() + why.dropFirst()
+    }
     private var idleTimer: Timer?
 
     /// Нейронка ест 3–6 ГБ памяти, пока сидит в сервере. Без дела не держим:
@@ -221,15 +237,24 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
         p.executableURL = URL(fileURLWithPath: serverBinary)
         p.arguments = ["-m", path(m), "--host", "127.0.0.1", "--port", "\(Self.port)",
                        "-c", "4096", "-ngl", "99", "--no-webui"]
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
+        // Что говорит сервер, пишем в лог: когда нейронка не поднимается на
+        // чужом маке, без этого не понять, почему.
+        let log = Self.logPath
+        try? FileManager.default.createDirectory(atPath: (log as NSString).deletingLastPathComponent,
+                                                 withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: log, contents: nil)
+        let handle = FileHandle(forWritingAtPath: log)
+        p.standardOutput = handle ?? FileHandle.nullDevice
+        p.standardError = handle ?? FileHandle.nullDevice
+        lastFailure = nil
         do {
             try p.run()
             server = p
             serverModelId = m.id
-            NSLog("Гига мозг: поднял \(m.name) на порту \(Self.port)")
+            NSLog("Гига мозг: поднял \(m.name) на порту \(Self.port), лог \(log)")
         } catch {
             NSLog("Гига мозг: сервер не поднялся — \(error)")
+            lastFailure = L("нейронка не запустилась", "the brain didn't start")
         }
     }
 
@@ -331,9 +356,33 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
             DispatchQueue.main.async { Toast.shared.hide() }
             done(out)
         }
-        let deadline = Date().addingTimeInterval(40)
-        waitHealthy(until: deadline) { [weak self] ok in
-            guard ok else { finish(nil); return }
+        // Холодный старт на слабом маке (8 ГБ, Qwen 2,5 ГБ) бывает и минуту:
+        // ждём до полутора, показывая секунды, чтобы «висит» не казалось
+        // «сломалось». Если сервер умер, не ждём вовсе.
+        let started = Date()
+        let deadline = started.addingTimeInterval(90)
+        waitHealthy(until: deadline, tick: { [weak self] in
+            guard cold else { return }
+            let sec = Int(Date().timeIntervalSince(started))
+            if sec >= 5, sec % 5 == 0 {
+                DispatchQueue.main.async {
+                    Toast.shared.showSticky(L("Запускаю нейронку… \(sec) с (первый раз бывает до минуты)",
+                                              "Starting the brain… \(sec)s (the first time can take up to a minute)"))
+                }
+            }
+            _ = self
+        }) { [weak self] ok in
+            guard ok else {
+                if let s = self?.server, !s.isRunning {
+                    self?.lastFailure = L("нейронка упала при запуске, подробности в \(Self.logPath)",
+                                          "the brain crashed on start, details in \(Self.logPath)")
+                } else if Date() >= deadline {
+                    self?.lastFailure = L("нейронка не поднялась за полторы минуты",
+                                          "the brain didn't come up within 90 seconds")
+                }
+                finish(nil); return
+            }
+            self?.lastFailure = nil
             if cold {
                 DispatchQueue.main.async { Toast.shared.showSticky(action) }
             }
@@ -343,15 +392,19 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
 
     /// Сервер мог только-только подняться и ещё грузить модель с диска —
     /// ждём его «ok», спрашивая раз в полсекунды.
-    private func waitHealthy(until deadline: Date, _ done: @escaping (Bool) -> Void) {
+    private func waitHealthy(until deadline: Date, tick: @escaping () -> Void = {},
+                             _ done: @escaping (Bool) -> Void) {
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(Self.port)/health")!)
         req.timeoutInterval = 2
         URLSession.shared.dataTask(with: req) { data, _, _ in
             if let data, String(data: data, encoding: .utf8)?.contains("ok") == true {
                 done(true)
+            } else if let s = self.server, !s.isRunning {
+                done(false)                       // сервер умер — ждать нечего
             } else if Date() < deadline {
                 DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-                    self.waitHealthy(until: deadline, done)
+                    tick()
+                    self.waitHealthy(until: deadline, tick: tick, done)
                 }
             } else {
                 done(false)
@@ -386,6 +439,7 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
                   !text.isEmpty
             else {
                 NSLog("Гига мозг: не ответил — \(error?.localizedDescription ?? "пустой ответ")")
+                self.lastFailure = L("нейронка не ответила", "the brain didn't answer")
                 done(nil)
                 return
             }

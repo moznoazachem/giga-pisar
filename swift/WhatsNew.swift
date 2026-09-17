@@ -8,11 +8,15 @@ import AppKit
 
 /// Что изменилось в ЭТОЙ версии. Обновлять при каждом выпуске вместе с номером.
 let WHATS_NEW: [String] = uiIsRussian ? [
-    "Новая галочка в меню «Приглушать звук»: на время диктовки музыка затихает, после отпускания клавиши громкость возвращается",
-    "Если звук был выключен заранее, приложение его не трогает",
+    "Новая галочка в меню «Приглушать звук»: на время диктовки музыка затихает, после отпускания клавиши громкость возвращается (Виталий Кузьменко)",
+    "Если приложение запущено прямо из «Загрузок», обновление само переносит его в Программы, а не ругается «нет прав»",
+    "Кнопка в окне ошибки обновления качает образ, а не открывает список файлов",
+    "Мозг: если нейронка не запустилась, плашка говорит почему; ожидание холодного старта до полутора минут с секундами",
 ] : [
-    "New “Mute While Dictating” option in the menu: sound goes quiet while you dictate and comes back when you release the key",
-    "If the sound was already off, the app leaves it alone",
+    "New “Mute While Dictating” option: sound goes quiet while you dictate and comes back when you release the key (Vitaly Kuzmenko)",
+    "If the app runs straight from Downloads, the update moves it to Applications instead of failing with “no permission”",
+    "The button in the update error dialog downloads the image instead of opening a file list",
+    "Brain: if the model didn't start, the toast says why; cold start waits up to 90 seconds and shows the seconds",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.

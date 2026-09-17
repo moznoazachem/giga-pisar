@@ -11,6 +11,9 @@
 import Foundation
 
 let RELEASES_PAGE = "https://github.com/moznoazachem/giga-pisar/releases/latest"
+/// Вечная ссылка на образ последнего выпуска: браузер сразу качает dmg,
+/// а не открывает страницу со списком файлов, в котором человек теряется.
+let DMG_URL = "https://github.com/moznoazachem/giga-pisar/releases/latest/download/GigaPisar.dmg"
 private let LATEST_API = "https://api.github.com/repos/moznoazachem/giga-pisar/releases/latest"
 
 /// Манифесты по площадкам, в порядке опроса.

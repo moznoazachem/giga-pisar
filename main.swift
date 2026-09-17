@@ -222,6 +222,13 @@ final class App: NSObject, NSApplicationDelegate {
                 self?.onboarding.show()
             }
         }
+        // Переехали в Программы ради обновления — не ждём 15 секунд, обновляемся
+        if UserDefaults.standard.bool(forKey: "updateAfterMove") {
+            UserDefaults.standard.removeObject(forKey: "updateAfterMove")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.checkUpdates(silent: false, autoInstall: true)
+            }
+        }
         // обновления: раз при запуске (чуть погодя) и дальше каждые 6 часов
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             self?.checkUpdates(silent: true)
@@ -586,6 +593,23 @@ final class App: NSObject, NSApplicationDelegate {
             openReleases() // выпуск без архива — только руками
             return
         }
+        // Запущено прямо из архива или «Загрузок»: macOS держит приложение
+        // во временной копии, подменить её нельзя. Раньше тут вылетало
+        // «нет прав заменить /private/var/…AppTranslocation…» и кнопка на
+        // страницу со списком файлов. Правильный выход один: переехать в
+        // Программы и обновиться уже оттуда.
+        if !canUpdateInPlace {
+            let a = NSAlert()
+            a.messageText = L("Сначала перенесу в Программы", "Moving to Applications first")
+            a.informativeText = L("Приложение запущено прямо из архива или «Загрузок», и macOS не даёт обновить его на месте. Я перенесу себя в Программы, перезапущусь оттуда и сразу обновлюсь до \(ver).",
+                                  "The app is running straight from the archive or Downloads, and macOS won't let it update in place. I'll move to Applications, relaunch from there and update to \(ver) right away.")
+            a.addButton(withTitle: L("Перенести и обновиться", "Move and update"))
+            a.addButton(withTitle: L("Позже", "Later"))
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+            UserDefaults.standard.set(true, forKey: "updateAfterMove")
+            moveToApplicationsAndRelaunch()
+            return
+        }
         updateWindow.onCancel = { [weak self] in
             SelfUpdate.cancel()
             self?.buildMenu()
@@ -613,11 +637,11 @@ final class App: NSObject, NSApplicationDelegate {
             self?.buildMenu()
             let a = NSAlert()
             a.messageText = L("Обновиться само не получилось", "Self-update didn't work")
-            a.informativeText = L("Причина: \(reason).\nМожно скачать вручную со страницы выпуска — это просто замена приложения.",
-                                  "Reason: \(reason).\nYou can download it manually from the releases page — it's just replacing the app.")
-            a.addButton(withTitle: L("Открыть страницу", "Open the page"))
+            a.informativeText = L("Причина: \(reason).\nМожно переустановить вручную: скачать образ, открыть его и перетащить Гига Писаря в Программы поверх старого.",
+                                  "Reason: \(reason).\nYou can reinstall by hand: download the image, open it and drag Giga Pisar into Applications over the old one.")
+            a.addButton(withTitle: L("Скачать образ", "Download the image"))
             a.addButton(withTitle: L("Позже", "Later"))
-            if a.runModal() == .alertFirstButtonReturn { self?.openReleases() }
+            if a.runModal() == .alertFirstButtonReturn { self?.openDmg() }
         })
     }
 
@@ -639,11 +663,26 @@ final class App: NSObject, NSApplicationDelegate {
         if let url = URL(string: RELEASES_PAGE) { NSWorkspace.shared.open(url) }
     }
 
+    /// Браузер сразу качает образ последнего выпуска.
+    func openDmg() {
+        if let url = URL(string: DMG_URL) { NSWorkspace.shared.open(url) }
+    }
+
+    /// Можно ли подменить работающее приложение на месте: не временная
+    /// карантинная копия и папка доступна на запись.
+    var canUpdateInPlace: Bool {
+        let path = Bundle.main.bundlePath
+        let fm = FileManager.default
+        return !path.contains("/AppTranslocation/")
+            && fm.isWritableFile(atPath: path)
+            && fm.isWritableFile(atPath: (path as NSString).deletingLastPathComponent)
+    }
+
     @objc func checkUpdatesManual() { checkUpdates(silent: false) }
 
     /// silent — фоновая проверка: молчит, если новостей нет, и об одной и той
     /// же версии напоминает окном только один раз (дальше — пункт в меню).
-    func checkUpdates(silent: Bool) {
+    func checkUpdates(silent: Bool, autoInstall: Bool = false) {
         // Обновление уже качается: предлагать его ещё раз бессмысленно,
         // вместо этого показываем, как оно идёт.
         if SelfUpdate.inProgress, let ver = SelfUpdate.version {
@@ -682,6 +721,7 @@ final class App: NSObject, NSApplicationDelegate {
                 }
                 self.updateAvailable = latest
                 self.buildMenu()
+                if autoInstall { self.startSelfUpdate(); return } // человек уже сказал «обновиться»
                 let seen = UserDefaults.standard.string(forKey: "lastUpdateNotified")
                 if !silent || seen != latest {
                     UserDefaults.standard.set(latest, forKey: "lastUpdateNotified")
@@ -843,7 +883,13 @@ final class App: NSObject, NSApplicationDelegate {
         a.addButton(withTitle: L("Перенести", "Move"))
         a.addButton(withTitle: L("Не сейчас", "Not now"))
         guard a.runModal() == .alertFirstButtonReturn else { return }
+        moveToApplicationsAndRelaunch()
+    }
 
+    /// Скопировать себя в Программы, снять карантин и перезапуститься оттуда.
+    func moveToApplicationsAndRelaunch() {
+        let path = Bundle.main.bundlePath
+        let dest = "/Applications/Giga Pisar.app"
         let fm = FileManager.default
         try? fm.removeItem(atPath: dest)
         do {
@@ -1080,8 +1126,9 @@ final class App: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.setState(.idle)
                 guard let out else {
-                    Toast.shared.show(L("Писарь не справился. Выделенное не тронул",
-                                        "Pisar could not do it. The selection is untouched"))
+                    Toast.shared.show(Brain.shared.failureText(
+                        L("Писарь не справился. Выделенное не тронул",
+                          "Pisar could not do it. The selection is untouched")))
                     return
                 }
                 self.paste(out, spacing: false) // встаёт вместо выделенного, пробел лишний
@@ -1187,8 +1234,9 @@ final class App: NSObject, NSApplicationDelegate {
                                 self.paste(out)
                             } else {
                                 self.paste(text)
-                                Toast.shared.show(L("Писарь не справился — вставил как есть",
-                                                    "Pisar could not do it — pasted as is"))
+                                Toast.shared.show(Brain.shared.failureText(
+                                    L("Писарь не справился — вставил как есть",
+                                      "Pisar could not do it — pasted as is")))
                             }
                         }
                     }
@@ -1269,8 +1317,9 @@ final class App: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.setState(.idle)
                 guard let out else {
-                    Toast.shared.show(L("Писарь не справился — оставил как было",
-                                        "Pisar could not do it — left it as is"))
+                    Toast.shared.show(Brain.shared.failureText(
+                        L("Писарь не справился — оставил как было",
+                          "Pisar could not do it — left it as is")))
                     return
                 }
                 let original = text
