@@ -104,6 +104,9 @@ final class App: NSObject, NSApplicationDelegate {
     var recognizer: Recognizer?
     let recognizerQueue = DispatchQueue(label: "ru.panda.giga.recognizer")
 
+    /// Приглушили ли мы звук сами — тогда нам его и возвращать.
+    private var soundHushed = false
+
     /// Плашка с волной у места набора (выключается в меню).
     let wave = WavePanel.shared
     var waveEnabled: Bool { UserDefaults.standard.object(forKey: "wavePanel") as? Bool ?? true }
@@ -391,6 +394,14 @@ final class App: NSObject, NSApplicationDelegate {
         waveItem.submenu = waveMenu
         menu.addItem(waveItem)
 
+        // тишина на время диктовки
+        let hush = mkItem(L("Приглушать звук", "Mute While Dictating"),
+                          sub: L("громкость вернём после диктовки",
+                                 "volume comes back afterwards"),
+                          icon: "speaker.slash", action: #selector(toggleHush))
+        hush.state = Sound.muteWhileDictating ? .on : .off
+        menu.addItem(hush)
+
         // автозапуск при входе
         let login = mkItem(L("Запускать при входе", "Open at Login"),
                            icon: "power", action: #selector(toggleLogin))
@@ -527,6 +538,26 @@ final class App: NSObject, NSApplicationDelegate {
             guard let self, let button = self.statusItem.button else { return }
             picker.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
+    }
+
+    /// Приглушить звук на время диктовки, если это выбрано в меню.
+    private func hushSound() {
+        guard Sound.muteWhileDictating else { return }
+        Sound.setMuted(true)
+        soundHushed = true
+    }
+
+    /// Вернуть звук. Возвращаем только если глушили сами: если человек
+    /// приглушил динамики до диктовки, включать их обратно не наше дело.
+    private func restoreSound() {
+        guard soundHushed else { return }
+        Sound.setMuted(false)
+        soundHushed = false
+    }
+
+    @objc func toggleHush() {
+        Sound.muteWhileDictating.toggle()
+        buildMenu()
     }
 
     @objc func pickWave(_ sender: NSMenuItem) {
@@ -980,6 +1011,7 @@ final class App: NSObject, NSApplicationDelegate {
         }
         recStart = Date()
         cancelled = false
+        hushSound()
         setState(.rec)
         if waveEnabled { wave.show(near: typingAnchor()) }
         captureSelection()
@@ -1069,6 +1101,7 @@ final class App: NSObject, NSApplicationDelegate {
 
     func stopRecording(abort: Bool) {
         guard mic.isRecording else { return }
+        restoreSound()
         cancelled = abort
         let samples = mic.stop()
         let dur = Date().timeIntervalSince(recStart ?? Date())
