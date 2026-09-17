@@ -8,15 +8,11 @@ import AppKit
 
 /// Что изменилось в ЭТОЙ версии. Обновлять при каждом выпуске вместе с номером.
 let WHATS_NEW: [String] = uiIsRussian ? [
-    "Обновление и загрузка модели идут в своём окне с полоской, а не текстом у значка: значок больше не прячется за чёлкой",
-    "Окно первого запуска: у каждого разрешения своя кнопка, подсказка с тумблером, поле для первой диктовки",
-    "В меню Мозга появился пункт «Что это и как пользоваться»",
-    "Скачивание с сайта: образ .dmg, открыл и перетащил в Программы",
+    "Новая галочка в меню «Приглушать звук»: на время диктовки музыка затихает, после отпускания клавиши громкость возвращается",
+    "Если звук был выключен заранее, приложение его не трогает",
 ] : [
-    "Updates and the model download get their own progress window instead of text next to the icon: the icon no longer hides behind the notch",
-    "First-run window: a real button per permission, a hint with the toggle, a field to try dictation",
-    "Pisar's Brain menu now has “What it is and how to use it”",
-    "Download from the site as a .dmg: open and drag to Applications",
+    "New “Mute While Dictating” option in the menu: sound goes quiet while you dictate and comes back when you release the key",
+    "If the sound was already off, the app leaves it alone",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.
