@@ -455,7 +455,7 @@ final class App: NSObject, NSApplicationDelegate {
                                 sub: m.details, icon: m.icon,
                                 action: #selector(pickBrain(_:)))
                 } else {
-                    it = mkItem(m.name, sub: m.details, icon: m.icon,
+                    it = mkItem(m.name, sub: Brain.shared.detailsText(m), icon: m.icon,
                                 action: #selector(pickBrain(_:)))
                     it.state = Brain.shared.chosenId == m.id ? .on : .off
                 }

@@ -92,6 +92,18 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.path
     }
+    /// Лежит ли у человека модель под старым именем (скачана до смены файла).
+    func usesLegacyFile(_ m: BrainModel) -> Bool {
+        !FileManager.default.fileExists(atPath: Self.modelsDir + "/" + m.file) && m.legacyFiles.contains { FileManager.default.fileExists(atPath: Self.modelsDir + "/" + $0) }
+    }
+    /// Что написать под моделью в меню: для старого файла его настоящий размер.
+    func detailsText(_ m: BrainModel) -> String {
+        guard usesLegacyFile(m) else { return m.details }
+        let size = (try? FileManager.default.attributesOfItem(atPath: path(m)))?[.size] as? UInt64 ?? 0
+        return L("скачана раньше · \(Memory.gb(size)) ГБ · работает как есть",
+                 "downloaded earlier · \(Memory.gb(size)) GB · works as is")
+    }
+
     /// Файл модели: новый, а если его нет, но лежит старый — старый.
     func path(_ m: BrainModel) -> String {
         let fresh = Self.modelsDir + "/" + m.file
