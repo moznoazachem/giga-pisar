@@ -23,6 +23,9 @@ struct BrainModel {
     let details: String     // честное описание: вес, чей русский, какие маки
     let file: String
     let url: String
+    /// Прежние имена файла: у кого модель уже скачана под старым именем,
+    /// она остаётся и работает, перекачивать не заставляем.
+    var legacyFiles: [String] = []
     let sizeText: String    // «6,5 ГБ» — для пункта «скачать»
     let minRAMGB: UInt64    // ниже этого объёма памяти отговариваем
     var icon: String? = nil // значок в меню: системный символ или свой из ресурсов
@@ -40,11 +43,14 @@ var BRAIN_MODELS: [BrainModel] { [
                icon: "gigachat"),
     BrainModel(id: "qwen",
                name: "Qwen",
-               details: L("лёгкая · 2,5 ГБ · русский неродной, но аккуратная",
-                          "light · 2.5 GB · non-native Russian, but tidy"),
-               file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-               url: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-               sizeText: L("2,5 ГБ", "2.5 GB"),
+               details: L("лёгкая · 1,9 ГБ · русский неродной, но аккуратная",
+                          "light · 1.9 GB · non-native Russian, but tidy"),
+               // Q3_K_M вместо Q4_K_M (18.09.2026): в памяти 2,35 ГБ вместо 3,0,
+               // качество на наших командах не хуже. Q2 уже коверкает слова.
+               file: "Qwen3-4B-Instruct-2507-Q3_K_M.gguf",
+               url: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q3_K_M.gguf",
+               legacyFiles: ["Qwen3-4B-Instruct-2507-Q4_K_M.gguf"],
+               sizeText: L("1,9 ГБ", "1.9 GB"),
                minRAMGB: 8,
                icon: "qwen"),
 ] }
@@ -86,7 +92,16 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.path
     }
-    func path(_ m: BrainModel) -> String { Self.modelsDir + "/" + m.file }
+    /// Файл модели: новый, а если его нет, но лежит старый — старый.
+    func path(_ m: BrainModel) -> String {
+        let fresh = Self.modelsDir + "/" + m.file
+        if FileManager.default.fileExists(atPath: fresh) { return fresh }
+        for old in m.legacyFiles {
+            let p = Self.modelsDir + "/" + old
+            if FileManager.default.fileExists(atPath: p) { return p }
+        }
+        return fresh
+    }
     /// Сколько памяти займёт поднятая модель: файл целиком плюс контекст
     /// и накладные llama.cpp (около 700 МБ при контексте 4096).
     func memoryNeeded(_ m: BrainModel) -> UInt64 {
@@ -316,8 +331,9 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
 
     private static let selectionPrompt = """
     Ты редактируешь текст, который пользователь выделил в своём документе, \
-    и выполняешь над ним команду пользователя. Сохраняй смысл, тон и \
-    разбиение на абзацы, ничего не добавляй от себя и не комментируй. \
+    и выполняешь над ним команду пользователя. Сохраняй смысл и разбиение \
+    на абзацы, ничего не добавляй от себя и не комментируй. Тон и стиль \
+    сохраняй, если только команда не велит их изменить: команда важнее. \
     Команда дана в конце этой инструкции, в сам текст не входит, и \
     упоминать её в ответе нельзя. Верни ТОЛЬКО готовый текст, без кавычек \
     вокруг него.
@@ -327,8 +343,9 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
     Ты обрабатываешь надиктованный голосом текст перед вставкой. Правила: \
     убери слова-паразиты и оговорки (э, ну, типа, вот, как бы), убери повторы \
     и самоисправления, расставь знаки препинания, исправь очевидные ошибки \
-    распознавания. Сохраняй смысл, лексику и живой тон автора, ничего не \
-    добавляй от себя и не комментируй. Выполни команду пользователя: она \
+    распознавания. Сохраняй смысл и лексику, ничего не добавляй от себя и \
+    не комментируй. Живой тон автора сохраняй, если только команда не велит \
+    его изменить: команда важнее тона. Выполни команду пользователя: она \
     дана в конце этой инструкции, в сам текст не входит, и упоминать её \
     в ответе нельзя. Верни ТОЛЬКО готовый текст, без кавычек вокруг него.
     """

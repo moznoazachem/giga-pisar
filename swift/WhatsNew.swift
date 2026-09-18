@@ -8,15 +8,13 @@ import AppKit
 
 /// Что изменилось в ЭТОЙ версии. Обновлять при каждом выпуске вместе с номером.
 let WHATS_NEW: [String] = uiIsRussian ? [
-    "Новая галочка в меню «Приглушать звук»: на время диктовки музыка затихает, после отпускания клавиши громкость возвращается",
-    "Если приложение запущено прямо из «Загрузок», обновление само переносит его в Программы, а не ругается «нет прав»",
-    "Кнопка в окне ошибки обновления качает образ, а не открывает список файлов",
-    "Мозг: если нейронка не запустилась, плашка говорит почему; ожидание холодного старта до полутора минут с секундами",
+    "Мозг перед первым запуском смотрит, хватает ли свободной памяти, и предупреждает, если нейронка не влезет",
+    "Qwen теперь в сжатом виде: 1,9 ГБ вместо 2,5 и на 0,6 ГБ меньше в памяти, качество то же; уже скачанная остаётся",
+    "Qwen отвечает быстрее: выключено «размышление вслух»",
 ] : [
-    "New “Mute While Dictating” option: sound goes quiet while you dictate and comes back when you release the key",
-    "If the app runs straight from Downloads, the update moves it to Applications instead of failing with “no permission”",
-    "The button in the update error dialog downloads the image instead of opening a file list",
-    "Brain: if the model didn't start, the toast says why; cold start waits up to 90 seconds and shows the seconds",
+    "Before its first start the Brain checks free memory and warns if the model won't fit",
+    "Qwen is now compressed: 1.9 GB instead of 2.5 and 0.6 GB less in memory, same quality; an already downloaded copy stays",
+    "Qwen answers faster: “thinking out loud” is off",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.
