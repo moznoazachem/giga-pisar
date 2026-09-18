@@ -1,19 +1,19 @@
 {
-  "version": "3.6.4",
+  "version": "3.6.5",
   "downloads": [
-    "https://gitflic.ru/project/moznoazachem/giga/release/711e5bef-faf9-49a3-b5c1-a6351d254c61/27c60ad0-700c-44f6-8a54-03f674b28292/download",
-    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.6.4/GigaPisar-3.6.4.zip"
+    "https://gitflic.ru/project/moznoazachem/giga/release/59d7cbbc-a58a-4da2-97f9-51fbe69c98b8/57f3ba6a-d82b-4881-bef9-90f87cdfb109/download",
+    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.6.5/GigaPisar-3.6.5.zip"
   ],
   "notes": {
     "ru": [
-      "Новая галочка «Приглушать звук»: на время диктовки музыка затихает, потом громкость возвращается",
-      "Запущенное из «Загрузок» приложение при обновлении само переезжает в Программы",
-      "Мозг: если нейронка не запустилась, плашка говорит почему"
+      "Мозг перед первым запуском проверяет свободную память и предупреждает, если нейронка не влезет",
+      "Qwen в сжатом виде: 1,9 ГБ вместо 2,5, качество то же; уже скачанная остаётся",
+      "Qwen отвечает быстрее"
     ],
     "en": [
-      "New “Mute While Dictating” option: sound goes quiet while you dictate, then comes back",
-      "An app launched from Downloads moves itself to Applications when updating",
-      "Brain: if the model didn't start, the toast says why"
+      "The Brain checks free memory before its first start and warns if the model won't fit",
+      "Qwen is compressed: 1.9 GB instead of 2.5, same quality; an already downloaded copy stays",
+      "Qwen answers faster"
     ]
   }
 }
