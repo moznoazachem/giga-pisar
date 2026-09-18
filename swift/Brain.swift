@@ -98,7 +98,7 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
     /// поднимет, и человек видел бы «Запускаю нейронку…» без конца).
     func downloaded(_ m: BrainModel) -> Bool {
         let size = (try? FileManager.default.attributesOfItem(atPath: path(m)))?[.size] as? Int64 ?? 0
-        return size > 1_000_000_000
+        return size > 900_000_000
     }
 
     // MARK: скачивание модели (с процентами и докачкой после обрывов)
@@ -447,6 +447,12 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
         }.resume()
     }
 
+    /// Если модель всё же подумала вслух, оставляем только ответ.
+    static func stripThinking(_ s: String) -> String {
+        guard let close = s.range(of: "</think>") else { return s }
+        return String(s[close.upperBound...])
+    }
+
     private func chat(body: String, command: String, mode: Mode, done: @escaping (String?) -> Void) {
         // Команда уходит в системную инструкцию, а тексту — отдельное
         // сообщение целиком. Раньше команда подклеивалась к тексту строкой
@@ -458,7 +464,10 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
             ["role": "user", "content": body],
         ]
         let payload: [String: Any] = ["messages": messages,
-                                      "temperature": 0.3, "max_tokens": 2048]
+                                      "temperature": 0.3, "max_tokens": 2048,
+                                      // Qwen3 без «Instruct» умеет думать вслух блоком <think>:
+                                      // для правки текста это лишнее и долго
+                                      "chat_template_kwargs": ["enable_thinking": false]]
         var req = URLRequest(url: URL(string: "http://127.0.0.1:\(Self.port)/v1/chat/completions")!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -469,7 +478,7 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let choices = obj["choices"] as? [[String: Any]],
                   let msg = choices.first?["message"] as? [String: Any],
-                  let text = (msg["content"] as? String)?
+                  case let text = Self.stripThinking(msg["content"] as? String ?? "")
                       .trimmingCharacters(in: .whitespacesAndNewlines),
                   !text.isEmpty
             else {
