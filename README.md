@@ -163,6 +163,20 @@ version number travels over the network. When one is out, click "Update":
 the app downloads it (percent in the menu bar), verifies the signature,
 replaces itself and relaunches. Nothing is ever installed without the click.
 
+### Kazakh (Қазақша)
+
+The "Қазақша" menu item switches dictation to Kazakh. A separate model listens then —
+[GigaAM Multilingual](https://github.com/salute-developers/GigaAM) `multilingual_ctc`
+(WER 4.4–18.8% on Kazakh, 3–4× better than Whisper), 244 MB download, stored in
+`~/.giga/model-kk`. It has no punctuation of its own, so `swift/KazakhPunct.swift` adds
+it by rules: a period after a predicate followed by a pause (Kazakh is SOV), commas after
+converbs/conditionals and before «яғни, бірақ, себебі», "?" after «ма/ме/ба/бе/па/пе»,
+capital letters. Only one model is in memory at a time.
+
+- `swift/CTC.swift` — CTC recognizer, `swift/KazakhPunct.swift` — punctuation rules
+- `server/kk_core.py`, `server/kk_punct.py` — the Python reference; `scripts/сверка-kk.py` compares
+- `scripts/export-kk.py` — builds the ONNX int8 model and the release archive
+
 ### Limitations
 
 - Built for Russian — **including English words sprinkled into Russian speech**:
@@ -344,6 +358,20 @@ tccutil reset Accessibility ru.panda.giga
 сети уходит только номер версии. Вышла — жми «Обновить»: скачает (проценты
 в строке меню), проверит подпись, подменит себя и перезапустится. Без клика
 само ничего не ставит.
+
+### Қазақша
+
+Пункт меню «Қазақша» переключает диктовку на казахский. Тогда слушает отдельная модель —
+[GigaAM Multilingual](https://github.com/salute-developers/GigaAM) `multilingual_ctc`
+(WER 4,4–18,8% на казахском, в 3–4 раза точнее Whisper), 244 МБ, живёт в `~/.giga/model-kk`.
+Своей пунктуации у неё нет, поэтому `swift/KazakhPunct.swift` ставит знаки по правилам:
+точка после сказуемого на паузе (казахский — язык SOV), запятые после деепричастий
+и условных форм и перед «яғни, бірақ, себебі», «?» после «ма/ме/ба/бе/па/пе», заглавные.
+В памяти всегда одна модель.
+
+- `swift/CTC.swift` — распознавание CTC, `swift/KazakhPunct.swift` — правила пунктуации
+- `server/kk_core.py`, `server/kk_punct.py` — эталон на питоне; сверка — `scripts/сверка-kk.py`
+- `scripts/export-kk.py` — собирает модель ONNX int8 и архив для релиза
 
 ### Ограничения
 
