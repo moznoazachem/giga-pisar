@@ -24,12 +24,13 @@ func L(_ ru: String, _ en: String) -> String { uiIsRussian ? ru : en }
 
 // Где искать файлы модели. Сначала внутри самого приложения — так его можно
 // отдать человеку одним куском; потом обычные места на диске.
-func findModelDir() -> String? {
+// У каждого языка своя модель и своя папка: русская в model, казахская в model-kk.
+func findModelDir(_ lang: SpeechLang = .current) -> String? {
     var places: [String] = []
-    if let res = Bundle.main.resourcePath { places.append(res + "/model") }
-    places.append("\(NSHomeDirectory())/.giga/model")
+    if let res = Bundle.main.resourcePath { places.append(res + "/" + lang.folder) }
+    places.append("\(NSHomeDirectory())/.giga/\(lang.folder)")
     for dir in places
-    where FileManager.default.fileExists(atPath: "\(dir)/\(Recognizer.modelName).yaml") {
+    where FileManager.default.fileExists(atPath: "\(dir)/\(lang.modelFile)") {
         return dir
     }
     return nil
@@ -107,7 +108,7 @@ final class App: NSObject, NSApplicationDelegate {
     let onboarding = Onboarding()
 
     /// Модель. Грузится один раз в фоне; recognizer трогаем только из recognizerQueue.
-    var recognizer: Recognizer?
+    var recognizer: SpeechRecognizer?
     let recognizerQueue = DispatchQueue(label: "ru.panda.giga.recognizer")
 
     /// Приглушили ли мы звук сами — тогда нам его и возвращать.
@@ -401,6 +402,16 @@ final class App: NSObject, NSApplicationDelegate {
                                      "hold \(hotkeyInText()) and speak")))
         menu.addItem(NSMenuItem.separator())
 
+        let kk = SpeechLang.current == .kk
+        let langItem = mkItem(L("Қазақша", "Kazakh (Қазақша)"),
+                              sub: kk ? L("слушает казахская модель · нажми, чтобы вернуть русский",
+                                          "the Kazakh model listens · click for Russian")
+                                      : L("сейчас русский · нажми, чтобы диктовать по-казахски",
+                                          "Russian now · click to dictate in Kazakh"),
+                              icon: "globe", action: #selector(toggleSpeechLang))
+        langItem.state = kk ? .on : .off
+        menu.addItem(langItem)
+
         // Only quick switches, each with one grey line saying what it is; everything else is in Settings.
         let b = Brain.shared
         let brainSub: String
@@ -503,6 +514,16 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     @objc func showOnboarding() { onboarding.show() }
+
+    /// Русский ⇄ казахский. Модель меняется в фоне; если казахской ещё нет — предложим скачать.
+    @objc func toggleSpeechLang() {
+        SpeechLang.current = SpeechLang.current == .kk ? .ru : .kk
+        loadModel()
+        settingsChanged()
+        Toast.shared.show(SpeechLang.current == .kk
+                          ? L("Диктовка по-казахски", "Dictating in Kazakh")
+                          : L("Диктовка по-русски", "Dictating in Russian"))
+    }
 
     /// «Рассказать другу»: родная шторка «Поделиться» с готовым текстом и
     /// ссылкой на сайт. Сайт не меняется от версии к версии, там оба зеркала.
@@ -733,13 +754,19 @@ final class App: NSObject, NSApplicationDelegate {
     // MARK: сервер
 
     func loadModel() {
-        guard let dir = findModelDir() else {
+        let lang = SpeechLang.current
+        guard let dir = findModelDir(lang) else {
             DispatchQueue.main.async { [weak self] in self?.complainNoModel() }
             return
         }
         recognizerQueue.async { [weak self] in
             do {
-                self?.recognizer = try Recognizer(modelDir: dir)
+                // Прежняя модель отпускается здесь же: в памяти всегда одна.
+                self?.recognizer = nil
+                switch lang {
+                case .ru: self?.recognizer = try Recognizer(modelDir: dir)
+                case .kk: self?.recognizer = try CTCRecognizer(modelDir: dir)
+                }
             } catch {
                 NSLog("Гига Писарь: модель не загрузилась — \(error)")
                 DispatchQueue.main.async { self?.complainNoModel() }
@@ -755,11 +782,23 @@ final class App: NSObject, NSApplicationDelegate {
         let a = NSAlert()
         a.messageText = L("Остался один шаг — модель распознавания",
                           "One last piece — the speech model")
-        a.informativeText = L("Это «уши» Писаря: 204 МБ, качается один раз и переживает все обновления. Ход дела будет виден в отдельном окне.",
-                              "Pisar's ears: a one-time 204 MB download that survives every update. Progress shows in its own window.")
+        let lang = SpeechLang.current
+        if lang == .kk {
+            a.messageText = L("Нужна казахская модель распознавания", "The Kazakh speech model is needed")
+        }
+        a.informativeText = L("Это «уши» Писаря: \(lang.downloadMB) МБ, качается один раз и переживает все обновления. Ход дела будет виден в отдельном окне.",
+                              "Pisar's ears: a one-time \(lang.downloadMB) MB download that survives every update. Progress shows in its own window.")
         a.addButton(withTitle: L("Скачать", "Download"))
         a.addButton(withTitle: L("Позже", "Later"))
-        guard a.runModal() == .alertFirstButtonReturn else { return }
+        guard a.runModal() == .alertFirstButtonReturn else {
+            // Отказались от казахской — не оставляем Писаря глухим: назад на русский.
+            if lang == .kk, findModelDir(.ru) != nil {
+                SpeechLang.current = .ru
+                loadModel()
+                settingsChanged()
+            }
+            return
+        }
         downloadSpeechModel()
     }
 
@@ -767,7 +806,8 @@ final class App: NSObject, NSApplicationDelegate {
 
     func downloadSpeechModel() {
         guard modelDL == nil else { return }
-        let url = URL(string: "https://github.com/moznoazachem/giga-pisar-cli/releases/download/v1.0/gigaam-v3-onnx-int8.tar.gz")!
+        let lang = SpeechLang.current
+        let url = lang.downloadURL
         // Раньше проценты дописывались к значку в строке меню, значок
         // раздувался и на маках с чёлкой прятался за ней: «поставил, а
         // значка нет». Теперь окно с полоской, значок не трогаем.
@@ -789,17 +829,17 @@ final class App: NSObject, NSApplicationDelegate {
                                         "Model download failed (\(error ?? "network")) — try again later, the prompt returns on launch"))
                     return
                 }
-                self.unpackSpeechModel(file)
+                self.unpackSpeechModel(file, lang: lang)
             }
         })
         modelDL?.download(url)
     }
 
-    private func unpackSpeechModel(_ file: URL) {
+    private func unpackSpeechModel(_ file: URL, lang: SpeechLang) {
         modelWindow.onCancel = nil
         modelWindow.busy(L("Распаковываю…", "Unpacking…"))
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let dest = NSHomeDirectory() + "/.giga/model"
+            let dest = NSHomeDirectory() + "/.giga/" + lang.folder
             try? FileManager.default.createDirectory(atPath: dest, withIntermediateDirectories: true)
             let tar = Process()
             tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
@@ -808,7 +848,7 @@ final class App: NSObject, NSApplicationDelegate {
             do {
                 try tar.run()
                 tar.waitUntilExit()
-                ok = tar.terminationStatus == 0 && findModelDir() != nil
+                ok = tar.terminationStatus == 0 && findModelDir(lang) != nil
             } catch {}
             try? FileManager.default.removeItem(at: file)
             DispatchQueue.main.async {

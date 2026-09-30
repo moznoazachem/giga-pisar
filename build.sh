@@ -41,7 +41,7 @@ rm -rf build
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 
 SOURCES=(main.swift swift/Ort.swift swift/Features.swift swift/Tokenizer.swift
-         swift/Recognizer.swift swift/Audio.swift swift/Mic.swift swift/Sound.swift swift/WavePanel.swift swift/Chips.swift swift/Brain.swift swift/SettingsWindow.swift swift/Updates.swift
+         swift/Recognizer.swift swift/CTC.swift swift/KazakhPunct.swift swift/Audio.swift swift/Mic.swift swift/Sound.swift swift/WavePanel.swift swift/Chips.swift swift/Brain.swift swift/SettingsWindow.swift swift/Updates.swift
          swift/Onboarding.swift swift/SelfUpdate.swift swift/WhatsNew.swift swift/UpdateWindow.swift swift/Memory.swift)
 
 # универсальный бинарник: Apple Silicon + Intel в одном файле
@@ -89,6 +89,12 @@ if [ "$WITH_MODEL" = "1" ]; then
     # домашний каталог в раздаваемом файле — лишнее. Затираем.
     sed -i '' 's|model_path: .*|model_path: v3_e2e_rnnt_tokenizer.model|' \
         "$APP/Contents/Resources/model/v3_e2e_rnnt.yaml"
+    # Казахская модель — по желанию: если она стоит, кладём и её (+320 МБ).
+    if [ -f "$HOME/.giga/model-kk/multilingual_ctc.yaml" ]; then
+        echo "── кладу казахскую модель внутрь"
+        mkdir -p "$APP/Contents/Resources/model-kk"
+        cp "$HOME/.giga/model-kk"/multilingual_ctc* "$APP/Contents/Resources/model-kk/"
+    fi
 fi
 
 # Мозг Писаря: движок и библиотеки одной папкой (@loader_path сами найдутся)
