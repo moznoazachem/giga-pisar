@@ -115,11 +115,12 @@ let BUSY_BAR: CGFloat = 0.35
 
 // MARK: - Приложение
 
-final class App: NSObject, NSApplicationDelegate {
+final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var statusItem: NSStatusItem!
     let mic = Mic()
     var recStart: Date?
     var rightCmdDown = false
+    let recordingStart = RecordingStart()
     var cancelled = false
     var animTimer: Timer?
 
@@ -129,6 +130,7 @@ final class App: NSObject, NSApplicationDelegate {
     /// Модель. Грузится один раз в фоне; recognizer трогаем только из recognizerQueue.
     var recognizer: Recognizer?
     let recognizerQueue = DispatchQueue(label: "ru.panda.giga.recognizer")
+    private var pendingOperations = 0 // main queue; includes older takes and Brain
 
     /// Приглушили ли мы звук сами — тогда нам его и возвращать.
     private var soundHushed = false
@@ -146,47 +148,59 @@ final class App: NSObject, NSApplicationDelegate {
 
     /// Последняя удачная диктовка — страховка на случай «курсор был не в поле».
     var lastText: String?
+    private var recoveredTakes: [Int: [String]] = [:] // memory only; never logged
+    private func saveDictation(_ text: String, take current: Int) {
+        guard !text.isEmpty else { return }
+        var versions = recoveredTakes[current] ?? []
+        if !versions.contains(text) { versions.append(text) }
+        // Keep the raw text even after many Brain transformations.
+        if versions.count > 10 { versions.remove(at: 1) }
+        recoveredTakes[current] = versions
+        for key in recoveredTakes.keys.sorted().dropLast(20) { recoveredTakes.removeValue(forKey: key) }
+    }
+    private var recoveryWindow: NSWindow?
+    private let clipboard = DictationClipboard.shared
+    private var take = 0
+    private var takeTarget: pid_t = 0
+    private var takeFocus: AXUIElement?
 
-    /// Что лежало в буфере до диктовки. Вставлять можно только через буфер
-    /// (иначе ⌘V не нажать), но забирать его насовсем — невежливо: как только
-    /// текст встал в поле, возвращаем человеку то, что он копировал сам.
-    private var clipboardBefore: [NSPasteboardItem]?
-
-    /// Счётчик изменений буфера сразу после того, как мы положили туда своё.
-    /// По нему видно, не копировал ли человек что-то ещё, пока шла вставка.
-    private var clipboardMark = 0
-
-    /// Сколько ждать перед возвратом буфера. Приложение читает буфер, разбирая
-    /// наше ⌘V, и если вернуть прежнее слишком рано, вставится оно.
-    static let clipboardHold: TimeInterval = 0.5
-
-    /// Запомнить буфер перед тем, как класть в него диктовку. Второй раз
-    /// за заход не перезапоминаем: беречь надо самое первое, пользовательское.
-    func stashClipboard() {
-        guard clipboardBefore == nil else { return }
-        clipboardBefore = (NSPasteboard.general.pasteboardItems ?? []).map { item in
-            let copy = NSPasteboardItem()
-            for t in item.types { if let d = item.data(forType: t) { copy.setData(d, forType: t) } }
-            return copy
+    @objc func showLastDictation() {
+        if recoveryWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 300),
+                                  styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            window.title = L("Последние диктовки", "Recent dictations")
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            let scroll = NSTextView.scrollableTextView()
+            scroll.frame = window.contentView!.bounds
+            scroll.autoresizingMask = [.width, .height]; scroll.hasVerticalScroller = true
+            let text = scroll.documentView as! NSTextView
+            text.isEditable = false; text.isSelectable = true
+            text.autoresizingMask = [.width]; text.isVerticallyResizable = true
+            window.contentView = scroll
+            recoveryWindow = window; window.center()
+        }
+        ((recoveryWindow?.contentView as? NSScrollView)?.documentView as? NSTextView)?.string =
+            recoveredTakes.keys.sorted().reversed().flatMap { recoveredTakes[$0] ?? [] }.joined(separator: "\n\n———\n\n")
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        recoveryWindow?.makeKeyAndOrderFront(nil)
+    }
+    func windowDidBecomeKey(_ notification: Notification) {
+        if notification.object as? NSWindow === recoveryWindow { NSApp.setActivationPolicy(.regular) }
+    }
+    func windowWillClose(_ notification: Notification) {
+        if notification.object as? NSWindow === recoveryWindow,
+           !NSApp.windows.contains(where: { $0 !== recoveryWindow && $0.isVisible && $0.canBecomeKey }) {
+            NSApp.setActivationPolicy(.accessory)
         }
     }
-
-    /// Вернуть буфер как был — но только если в нём всё ещё наша диктовка:
-    /// человек мог за эти полсекунды скопировать что-то своё.
-    func restoreClipboard() {
-        guard let items = clipboardBefore else { return }
-        clipboardBefore = nil
-        let pb = NSPasteboard.general
-        guard pb.changeCount == clipboardMark else { return }
-        pb.clearContents()
-        if !items.isEmpty, !isConcealed(items) { pb.writeObjects(items) }
-    }
-
-    /// Вставить не вышло — диктовка остаётся в буфере, прежнее забываем.
-    func keepClipboard() { clipboardBefore = nil }
     /// Текст, который был выделен в момент нажатия рации. Если он есть и
     /// мозг включён, речь считается командой над ним, а не диктовкой.
     var selectionAtStart: String?
+    private var selectionPending = false
+    private var selectionFailed = false
+    private var selectionReady: (() -> Void)?
     /// Пока мы сами жмём клавиши (⌘C за пользователя), монитор keyDown
     /// не должен принимать их за «шорткат, отменяем запись».
     var syntheticKeyUntil = Date.distantPast
@@ -269,6 +283,8 @@ final class App: NSObject, NSApplicationDelegate {
     var state: State = .idle
 
     func setState(_ s: State) {
+        // An older transcription finishing must not hide a newer recording.
+        if mic.isRecording && s != .rec { return }
         state = s
         animTimer?.invalidate()
         animTimer = nil
@@ -300,7 +316,9 @@ final class App: NSObject, NSApplicationDelegate {
                 }
                 // окно с кареткой могли передвинуть прямо во время диктовки —
                 // раз в полсекунды спрашиваем место заново и едем за ним
-                if tick % 30 == 0, self.waveEnabled { self.wave.follow(typingAnchorIfKnown()) }
+                if tick % 30 == 0, self.waveEnabled, WavePanel.place == .cursor {
+                    self.wave.follow(typingAnchorIfKnown())
+                }
             }
             // В общих режимах: иначе открытое меню или перетаскивание
             // плашки останавливает волну до конца жеста.
@@ -397,6 +415,10 @@ final class App: NSObject, NSApplicationDelegate {
         // включённостью пунктов управляем сами: серые должны быть серыми,
         // даже если у них есть подменю
         menu.autoenablesItems = false
+        let recovery = NSMenuItem(title: L("Последние диктовки…", "Recent dictations…"),
+                                  action: #selector(showLastDictation), keyEquivalent: "")
+        recovery.target = self
+        menu.addItem(recovery)
 
         menu.addItem(mkHeader(L("Гига Писарь \(APP_VERSION)", "Giga Pisar \(APP_VERSION)"),
                               sub: L("зажми \(hotkeyInText()) и говори",
@@ -624,7 +646,8 @@ final class App: NSObject, NSApplicationDelegate {
     /// Обновление скачано и проверено; выходим на подмену, но вежливо:
     /// посреди диктовки или распознавания не дёргаемся — ждём покоя.
     func quitForUpdateWhenIdle() {
-        guard state == .idle else {
+        guard state == .idle, !mic.isRecording, !rightCmdDown, !clipboard.isBusy,
+              pendingOperations == 0 else {
             updateWindow.busy(L("Дождусь конца диктовки и перезапущусь…",
                                 "Waiting for the dictation to finish, then relaunching…"))
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -1134,15 +1157,17 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     func handleFlags(_ e: NSEvent) {
-        let hk = currentHotkey()
-        guard e.keyCode == hk.keycode else { return }
-        let pressed = e.modifierFlags.contains(hk.flag)
-        if pressed, !rightCmdDown {
+        switch RecordingStart.edge(hotkey: currentHotkey().keycode, eventKey: e.keyCode,
+                                   flags: e.modifierFlags.rawValue, isDown: rightCmdDown) {
+        case .press:
             rightCmdDown = true
             startRecording()
-        } else if !pressed, rightCmdDown {
+        case .release:
             rightCmdDown = false
+            recordingStart.cancel()
             stopRecording(abort: false)
+        case .none:
+            break
         }
     }
 
@@ -1150,40 +1175,51 @@ final class App: NSObject, NSApplicationDelegate {
 
     func startRecording() {
         guard !mic.isRecording else { return }
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+        let start = recordingStart.schedule { [weak self] in
+            guard let self, self.rightCmdDown else { return }
+            self.beginRecording()
+        }
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
             DispatchQueue.main.async {
                 guard granted else {
-                    let a = NSAlert()
-                    a.messageText = L("Гига Писарю нужен доступ к микрофону", "Giga Pisar needs microphone access")
-                    a.informativeText = L("Системные настройки → Конфиденциальность и безопасность → Микрофон → включи «Giga Pisar».",
-                                  "System Settings → Privacy & Security → Microphone → turn on “Giga Pisar”.")
-                    a.runModal()
+                    Toast.shared.show(L("Разреши Giga Pisar микрофон в настройках конфиденциальности.",
+                                        "Allow Giga Pisar microphone access in Privacy settings."))
                     return
                 }
-                self?.beginRecording()
+                DispatchQueue.main.async(execute: start)
             }
         }
     }
 
     func beginRecording() {
         guard !mic.isRecording else { return }
-        do {
-            try mic.start()
-        } catch {
-            // Устройство не завелось (частый случай на виртуалках).
-            // Раньше мы в этом положении молча показывали волну — человек
-            // диктовал в пустоту. Теперь говорим сразу и словами.
-            NSLog("Гига Писарь: микрофон не завёлся — \(error)")
-            setState(.idle)
-            Toast.shared.show(L("Микрофон не завёлся — звук не идёт. Проверь микрофон в настройках системы.",
-                                "The microphone didn't start — no audio. Check the microphone in System Settings."))
-            return
-        }
+        take += 1
+        Chips.shared.hide()
+        takeTarget = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        takeFocus = dictationFocus()
+        let current = take
+        selectionAtStart = nil
+        if selectionReady != nil { notifySavedDictation() }
+        selectionPending = false; selectionFailed = false; selectionReady = nil
         recStart = Date()
-        cancelled = false
-        hushSound()
-        setState(.rec)
-        if waveEnabled { wave.show(near: typingAnchor()) }
+        mic.start { [weak self] error in
+            guard let self, self.take == current else { return }
+            if let error {
+                NSLog("Гига Писарь: микрофон не завёлся — \(error)")
+                self.setState(.idle)
+                Toast.shared.show(L("Микрофон не завёлся — звук не идёт. Проверь микрофон в настройках системы.",
+                                    "The microphone didn't start — no audio. Check the microphone in System Settings."))
+                return
+            }
+            guard self.mic.isRecording else { return }
+            guard self.rightCmdDown else { self.stopRecording(abort: true); return }
+            self.cancelled = false
+            self.hushSound()
+            self.setState(.rec)
+            if self.waveEnabled {
+                self.wave.show(near: WavePanel.place == .cursor ? typingAnchor() : NSEvent.mouseLocation)
+            }
+        }
         captureSelection()
     }
 
@@ -1206,31 +1242,21 @@ final class App: NSObject, NSApplicationDelegate {
         // говорит пункт «Скопировать» в меню: включён, значит есть что брать.
         guard AXIsProcessTrusted(),
               length > 0 || (silent && frontMenuShortcutEnabled("C")) else { return }
-        let pb = NSPasteboard.general
-        let before = pb.changeCount
-        let snapshot: [NSPasteboardItem] = (pb.pasteboardItems ?? []).map { item in
-            let copy = NSPasteboardItem()
-            for t in item.types { if let d = item.data(forType: t) { copy.setData(d, forType: t) } }
-            return copy
-        }
-        syntheticKeyUntil = Date().addingTimeInterval(0.4)
-        pressKey(8, .maskCommand) // ⌘C
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self else { return }
-            guard pb.changeCount != before else {
-                NSLog("Гига выделение: ⌘C ничего не дал")
-                return
-            }
-            // Файлы (Finder) и картинки без текста командами не правим.
-            let isFile = pb.types?.contains(.fileURL) ?? false
-            if !isFile, let s = pb.string(forType: .string),
-               !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let current = take
+        selectionPending = true
+        clipboard.selection(allowed: { [weak self] in
+            guard let self else { return false }
+            return self.take == current
+                && NSWorkspace.shared.frontmostApplication?.processIdentifier == self.takeTarget
+        }, copy: { [weak self] in self?.pressKey(8, .maskCommand) }) { [weak self] s in
+            guard let self, self.take == current else { return }
+            self.selectionPending = false
+            if case .text(let s) = s, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 self.selectionAtStart = s
-                NSLog("Гига выделение: через ⌘C, \(s.count) знаков")
-                self.hintSelection(s.count)
-            }
-            pb.clearContents()
-            if !snapshot.isEmpty, !isConcealed(snapshot) { pb.writeObjects(snapshot) }
+                if self.mic.isRecording { self.hintSelection(s.count) }
+            } else { self.selectionFailed = s != .noChange || length > 0 }
+            let ready = self.selectionReady; self.selectionReady = nil
+            ready?()
         }
     }
 
@@ -1246,11 +1272,18 @@ final class App: NSObject, NSApplicationDelegate {
         guard let sel = selectionAtStart else { return false }
         selectionAtStart = nil
         let cmd = Brain.stripAddress(speech)
-        guard !cmd.isEmpty, Brain.shared.ready else { return false }
+        guard !cmd.isEmpty, Brain.shared.ready else {
+            setState(.idle); notifySavedDictation(); return true
+        }
         NSLog("Гига выделение: команда (\(cmd.count) знаков) над \(sel.count) знаками")
+        let current = take
+        pendingOperations += 1
         Brain.shared.transform(sel, command: cmd, mode: .selection) { [weak self] out in
             DispatchQueue.main.async {
                 guard let self else { return }
+                defer { self.pendingOperations -= 1 }
+                if let out { self.saveDictation(out, take: current) }
+                guard self.take == current else { if out != nil { self.notifySavedDictation() }; return }
                 self.setState(.idle)
                 guard let out else {
                     Toast.shared.show(Brain.shared.failureText(
@@ -1258,13 +1291,16 @@ final class App: NSObject, NSApplicationDelegate {
                           "Pisar could not do it. The selection is untouched")))
                     return
                 }
-                self.paste(out, spacing: false) // встаёт вместо выделенного, пробел лишний
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                self.paste(out, spacing: false) {
+                    guard self.take == current else { return }
                     if Brain.shared.chipsEnabled {
                         let p = typingAnchorIfKnown() ?? NSEvent.mouseLocation
                         Chips.shared.showRevert(near: p, terminal: false) { [weak self] in
+                            guard let self, self.take == current,
+                                  NSWorkspace.shared.frontmostApplication?.processIdentifier == self.takeTarget,
+                                  matchesDictationFocus(self.takeFocus) else { return }
                             // ⌘Z откатывает вставку, редактор сам возвращает выделенное
-                            self?.undoInsert(chars: out.count)
+                            self.undoInsert(chars: out.count)
                         }
                     } else {
                         Toast.shared.show(L("Готово. Вернуть как было: ⌘Z", "Done. Undo with ⌘Z"))
@@ -1276,39 +1312,58 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     func stopRecording(abort: Bool) {
+        recordingStart.cancel()
         guard mic.isRecording else { return }
         restoreSound()
         cancelled = abort
-        let samples = mic.stop()
         let dur = Date().timeIntervalSince(recStart ?? Date())
-        if cancelled || dur < MIN_SECONDS {
-            setState(.idle)
-            return
+        let current = take
+        mic.stop { [weak self] samples in
+            guard let self else { return }
+            guard let samples, !abort, dur >= MIN_SECONDS else {
+                if self.take == current { self.setState(.idle) }
+                return
+            }
+            self.prepareTranscription(samples, take: current)
         }
-        // Запись шла, а звука в ней нет — так отдают тишину сломанные
-        // и виртуальные драйверы. Красное мигание иконки легко пропустить,
-        // поэтому говорим словами, той же плашкой, что про курсор.
-        let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
-        guard peak > 0.0015 else {
-            setState(.idle)
-            Toast.shared.show(L("Микрофон отдал тишину — звук до записи не дошёл",
-                                "The microphone delivered silence — no audio reached the recording"))
-            return
+        setState(.busy)
+    }
+
+    private func prepareTranscription(_ samples: [Float], take current: Int) {
+        pendingOperations += 1
+        recognizerQueue.async { [weak self] in
+            // Conversion, silence detection and WAV I/O never run on the UI queue.
+            let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
+            guard peak > 0.0015 else {
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.pendingOperations -= 1
+                    guard self.take == current else { return }
+                    self.setState(.idle)
+                    Toast.shared.show(L("Микрофон отдал тишину — звук до записи не дошёл",
+                                        "The microphone delivered silence — no audio reached the recording"))
+                }
+                return
+            }
+            Audio.writeWav(samples, rate: 16000, to: WAV_PATH)
+            DispatchQueue.main.async {
+                self?.transcribe(samples, take: current)
+            }
         }
-        Audio.writeWav(samples, rate: 16000, to: WAV_PATH) // след для разбора полётов
-        transcribe(samples)
     }
 
     // MARK: распознавание и вставка
 
-    func transcribe(_ samples: [Float]) {
-        setState(.busy)
+    func transcribe(_ samples: [Float], take current: Int) {
+        if take == current { setState(.busy) }
         recognizerQueue.async { [weak self] in
             guard let r = self?.recognizer else {
                 // Модель не нашлась вовсе (про это уже было окно при запуске).
                 // Если она ещё грузилась, мы сюда не попадём: загрузка стоит
                 // в этой же очереди первой, и работа дождалась её сама.
                 DispatchQueue.main.async {
+                    self?.pendingOperations -= 1
+                    guard self?.take == current else { return }
                     self?.setState(.idle)
                     self?.flashError()
                 }
@@ -1320,6 +1375,8 @@ final class App: NSObject, NSApplicationDelegate {
             } catch {
                 NSLog("Гига Писарь: не распознал — \(error)")
                 DispatchQueue.main.async {
+                    self?.pendingOperations -= 1
+                    guard self?.take == current else { return }
                     self?.setState(.idle)
                     self?.flashError()
                 }
@@ -1327,20 +1384,24 @@ final class App: NSObject, NSApplicationDelegate {
             }
             DispatchQueue.main.async {
                 guard let self else { return }
-                if text.isEmpty {
-                    self.setState(.idle)
-                    self.flashError()
+                defer { self.pendingOperations -= 1 }
+                self.saveDictation(text, take: current)
+                self.deliverTranscription(text, take: current)
+            }
+        }
+    }
+
+    private func deliverTranscription(_ text: String, take current: Int) {
+                guard self.take == current else { if !text.isEmpty { self.notifySavedDictation() }; return }
+                guard !text.isEmpty else { setState(.idle); flashError(); return }
+                if selectionPending {
+                    selectionReady = { [weak self] in self?.deliverTranscription(text, take: current) }
                     return
                 }
+                guard !selectionFailed else { setState(.idle); notifySavedDictation(); return }
                 // Было выделение при нажатии рации? Тогда это команда над ним.
                 if self.runSelectionCommand(text) { return }
-                // Сразу в буфер: что бы дальше ни случилось (мозг завис,
-                // вставка не прошла, приложение перезапустили) — наговоренное
-                // уже не потеряется, его можно вставить самому через ⌘V.
-                let pb = NSPasteboard.general
-                self.stashClipboard()
-                putDictation(text, on: pb)
-                self.clipboardMark = pb.changeCount
+                // Keep raw text available in the menu even if Brain/clipboard stalls.
                 // Обращение «Писарь, …» в конце? Сперва текст идёт в мозг.
                 if let (body, cmd) = Brain.parseCommand(text) {
                     guard Brain.shared.ready else {
@@ -1353,8 +1414,12 @@ final class App: NSObject, NSApplicationDelegate {
                         return
                     }
                     // остаёмся в .busy: точки в строке меню, серая волна — «думаю»
+                    self.pendingOperations += 1
                     Brain.shared.transform(body, command: cmd) { out in
                         DispatchQueue.main.async {
+                            defer { self.pendingOperations -= 1 }
+                            self.saveDictation(out ?? text, take: current)
+                            guard self.take == current else { self.notifySavedDictation(); return }
                             self.setState(.idle)
                             if let out {
                                 self.paste(out)
@@ -1370,8 +1435,12 @@ final class App: NSObject, NSApplicationDelegate {
                 }
                 // "Edit every take": no address needed, the whole take goes through the Brain.
                 if Brain.shared.everyTake, Brain.shared.ready {
+                    self.pendingOperations += 1
                     Brain.shared.transform(text, command: "исправь") { out in
                         DispatchQueue.main.async {
+                            defer { self.pendingOperations -= 1 }
+                            self.saveDictation(out ?? text, take: current)
+                            guard self.take == current else { self.notifySavedDictation(); return }
                             self.setState(.idle)
                             self.paste(out ?? text, simplify: true)
                             if out == nil {
@@ -1385,8 +1454,6 @@ final class App: NSObject, NSApplicationDelegate {
                 }
                 self.setState(.idle)
                 self.paste(text, offerChips: true, simplify: true)
-            }
-        }
     }
 
     func flashError() {
@@ -1397,6 +1464,11 @@ final class App: NSObject, NSApplicationDelegate {
             guard let self, self.state == .idle else { return }
             self.setState(.idle)
         }
+    }
+
+    private func notifySavedDictation() {
+        Toast.shared.show(L("Текст готов: меню → Последние диктовки. Автоматически не вставлял.",
+                            "Text ready: menu → Recent dictations. Not pasted automatically."))
     }
 
     /// Терминалы: ⌘Z там не откатывает текст, поэтому подмена другая —
@@ -1415,6 +1487,7 @@ final class App: NSObject, NSApplicationDelegate {
 
     /// Нажать клавишу с модификаторами за пользователя (⌘V, ⌘Z…).
     func pressKey(_ vk: CGKeyCode, _ flags: CGEventFlags) {
+        syntheticKeyUntil = Date().addingTimeInterval(0.4)
         let src = CGEventSource(stateID: .combinedSessionState)
         let down = CGEvent(keyboardEventSource: src, virtualKey: vk, keyDown: true)
         down?.flags = flags
@@ -1429,21 +1502,51 @@ final class App: NSObject, NSApplicationDelegate {
     /// (в поле ввода Claude Code — нет), поэтому надёжнее стереть
     /// вставленное побуквенно: Backspace ровно столько раз, сколько
     /// символов вставили. Курсор после вставки стоит в конце — попадаем.
-    func undoInsert(chars: Int) {
+    func undoInsert(chars: Int, done: @escaping (Bool) -> Void = { _ in }) {
+        let current = take, target = takeTarget
+        var deletionStarted = false
+        func interrupted() {
+            Toast.shared.show(deletionStarted
+                ? L("Откат прерван: прежний текст мог быть стёрт частично. Диктовки — в меню → Последние диктовки.",
+                    "Undo interrupted: previous text may be partly removed. Dictations: menu → Recent dictations.")
+                : L("Откат отменён до удаления. Диктовки — в меню → Последние диктовки.",
+                    "Undo canceled before deletion. Dictations: menu → Recent dictations."))
+            done(false)
+        }
         if frontIsTerminal {
-            for i in 0..<min(chars, 4000) {
-                pressKey(51, []) // Backspace
-                if i % 25 == 24 { usleep(8000) } // терминалу нужен вдох
+            guard chars <= 4000 else { interrupted(); return }
+            var remaining = max(0, chars)
+            func batch() {
+                guard self.take == current, !self.mic.isRecording, !self.rightCmdDown,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == target,
+                      matchesDictationFocus(self.takeFocus) else { interrupted(); return }
+                if remaining > 0 { deletionStarted = true }
+                for _ in 0..<min(25, remaining) { self.pressKey(51, []) }
+                remaining -= min(25, remaining)
+                if remaining > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.008, execute: batch) }
+                else { done(true) }
             }
+            batch()
         } else {
+            guard !mic.isRecording, NSWorkspace.shared.frontmostApplication?.processIdentifier == target,
+                  matchesDictationFocus(takeFocus) else { interrupted(); return }
             pressKey(6, .maskCommand) // ⌘Z
+            deletionStarted = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                guard self.take == current, !self.mic.isRecording,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == target,
+                      matchesDictationFocus(self.takeFocus) else { interrupted(); return }
+                done(true)
+            }
         }
     }
 
     /// Меню Писаря у точки набора. В терминале — в терминальном костюме.
     func showChipsMenu() {
+        let current = take
         let p = typingAnchorIfKnown() ?? NSEvent.mouseLocation
         Chips.shared.show(near: p, terminal: frontIsTerminal) { [weak self] cmd in
+            guard self?.take == current else { return }
             self?.applyChip(cmd)
         }
     }
@@ -1452,10 +1555,21 @@ final class App: NSObject, NSApplicationDelegate {
     /// (откатываем свою вставку через ⌘Z и вставляем причёсанное).
     func applyChip(_ command: String) {
         guard let text = lastText else { return }
+        let current = take, target = takeTarget
         setState(.busy)
+        pendingOperations += 1
         Brain.shared.transform(text, command: command) { [weak self] out in
             DispatchQueue.main.async {
                 guard let self else { return }
+                defer { self.pendingOperations -= 1 }
+                if let out { self.saveDictation(out, take: current) }
+                guard self.take == current else {
+                    if out != nil { self.notifySavedDictation() }; return
+                }
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target else {
+                    self.setState(.idle)
+                    if out != nil { self.notifySavedDictation() }; return
+                }
                 self.setState(.idle)
                 guard let out else {
                     Toast.shared.show(Brain.shared.failureText(
@@ -1464,23 +1578,21 @@ final class App: NSObject, NSApplicationDelegate {
                     return
                 }
                 let original = text
-                self.undoInsert(chars: text.count)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    self.paste(out)
+                self.paste(out, replacing: text.count) {
                     // рядом повисает «Вернуть как было» — вдруг не понравилось
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                         let p = typingAnchorIfKnown() ?? NSEvent.mouseLocation
+                        guard self.take == current else { return }
                         Chips.shared.showRevert(near: p, terminal: self.frontIsTerminal) { [weak self] in
-                            guard let self else { return }
+                            guard let self, self.take == current else { return }
                             // считаем по вставленному, а не по ответу мозга:
                             // paste мог дописать пробел, и в терминале мы
                             // стираем ровно столько символов, сколько вставили
-                            self.undoInsert(chars: self.lastText?.count ?? out.count)
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                self.paste(original)
+                            self.paste(original, replacing: self.lastText?.count ?? out.count) {
                                 // вернули — и снова предлагаем команды:
                                 // меню живёт до Enter или крестика
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                    guard self.take == current else { return }
                                     self.showChipsMenu()
                                 }
                             }
@@ -1533,19 +1645,58 @@ final class App: NSObject, NSApplicationDelegate {
 
     /// simplify: only plain dictation goes through «Упрощать синтаксис»; Brain answers,
     /// edits of a selection and «Вернуть как было» are put in exactly as they are.
-    func paste(_ text: String, offerChips: Bool = false, spacing: Bool = true, simplify: Bool = false) {
+    func paste(_ text: String, offerChips: Bool = false, spacing: Bool = true, simplify: Bool = false,
+               replacing: Int? = nil, completion: (() -> Void)? = nil) {
         var text = simplify ? simplified(text) : text
         if spacing, let last = text.last, !last.isWhitespace { text += " " }
-        lastText = text
+        saveDictation(text, take: take)
 
         // Вставляем через буфер (быстро и надёжно), но берём его взаймы:
         // прежнее содержимое запоминаем и вернём, как только текст встанет
         // в поле. Если вставить не выйдет — диктовка в буфере и останется,
         // чтобы её можно было вставить самому.
-        let pb = NSPasteboard.general
-        stashClipboard()
-        putDictation(text, on: pb)
-        clipboardMark = pb.changeCount
+        let current = take
+        let target = takeTarget
+        let focus = takeFocus
+        clipboard.paste(text, allowed: { [weak self] in
+            guard let self else { return false }
+            return self.take == current && !self.mic.isRecording
+                && NSWorkspace.shared.frontmostApplication?.processIdentifier == target
+                && matchesDictationFocus(focus)
+        }, action: { [weak self] isOurs, done in
+            guard let self else { done(false); return }
+            let insert = {
+                guard self.take == current, !self.mic.isRecording,
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == target,
+                      matchesDictationFocus(focus) else {
+                    if replacing != nil {
+                        Toast.shared.show(L("Старый текст мог быть удалён; вставка остановлена. Новый текст — в меню → Последние диктовки.",
+                                            "Previous text may be removed; paste stopped. New text: menu → Recent dictations."))
+                    } else { self.notifySavedDictation() }
+                    done(true); return
+                }
+                guard isOurs() else {
+                    Toast.shared.show(L("Буфер изменился, вставка остановлена. Прежний текст мог быть удалён при замене; диктовка — в меню → Последние диктовки.",
+                                        "Clipboard changed; paste stopped. Previous text may have been removed during replacement; dictation: menu → Recent dictations."))
+                    done(false); return
+                }
+                let result = self.finishPaste(offerChips: offerChips, isOurs: isOurs)
+                if result { self.lastText = text; completion?() }
+                done(result)
+            }
+            if let replacing, AXIsProcessTrusted() || CGPreflightPostEventAccess() {
+                self.undoInsert(chars: replacing) { success in
+                    if success { insert() } else { done(true) }
+                }
+            } else { insert() }
+        }, failed: {
+            Toast.shared.show(L("Вставка недоступна. Текст сохранён: меню → Последние диктовки.",
+                                "Paste unavailable. Text saved: menu → Recent dictations."))
+        })
+    }
+
+    private func finishPaste(offerChips: Bool, isOurs: () -> Bool) -> Bool {
+        let current = take
 
         // Есть ли куда вставлять? Спрашиваем про сам фокус в текстовом поле,
         // а не про координаты каретки: терминалы и Electron часто скрывают,
@@ -1561,13 +1712,14 @@ final class App: NSObject, NSApplicationDelegate {
             // Системный промпт «Giga Pisar would like to control this computer…»
             let opts = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(opts)
-            let a = NSAlert()
-            a.messageText = L("Ещё одно разрешение — и всё", "One more permission and you're set")
-            a.informativeText = L("Текст уже в буфере — вставь его сам через ⌘V.\nВ появившемся системном окне нажми «Open System Settings» и включи «Giga Pisar» в списке Accessibility.",
-                                  "The text is already on the clipboard — paste it with ⌘V.\nIn the system dialog, click “Open System Settings” and turn on “Giga Pisar” under Accessibility.")
-            a.runModal()
-            keepClipboard() // вставить нечем — диктовка остаётся в буфере
-            return
+            Toast.shared.show(L("Текст в буфере. Для вставки разреши Giga Pisar Универсальный доступ.",
+                                "Text is on the clipboard. Allow Giga Pisar Accessibility access to paste."))
+            return false
+        }
+        guard isOurs() else {
+            Toast.shared.show(L("Буфер изменился: вставка остановлена. После замены проверь прежний текст; диктовка сохранена в меню.",
+                                "Clipboard changed: paste stopped. Check previous text after replacement; dictation is saved in the menu."))
+            return false
         }
         pressKey(9, .maskCommand) // ⌘V
         if inField {
@@ -1576,20 +1728,18 @@ final class App: NSObject, NSApplicationDelegate {
             // этого пришлось отказаться: Electron (VS Code и плагины в нём)
             // отвечает Accessibility как попало, и проверка объявляла неудачу
             // поверх удавшейся вставки.
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.clipboardHold) { [weak self] in
-                self?.restoreClipboard()
-            }
             // Менюшка: сырой текст вставлен, предложить причесать.
             if offerChips, Brain.shared.ready, Brain.shared.chipsEnabled {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard self?.take == current else { return }
                     self?.showChipsMenu()
                 }
             }
         } else {
-            keepClipboard() // поля не было — диктовка нужна в буфере
             Toast.shared.show(L("Курсор был не в тексте — диктовка в буфере, нажми ⌘V",
                                 "The cursor wasn't in a text field — your dictation is on the clipboard, press ⌘V"))
         }
+        return inField
     }
 }
 
@@ -1623,4 +1773,3 @@ let delegate = App()
 app.delegate = delegate
 app.setActivationPolicy(.accessory) // без иконки в доке
 app.run()
-

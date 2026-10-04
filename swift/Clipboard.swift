@@ -20,3 +20,156 @@ func isConcealed(_ items: [NSPasteboardItem]) -> Bool {
     return items.contains { $0.types.contains(concealed) }
 }
 
+/// One owner for clipboard IPC. A stalled provider must not block the main
+/// queue, accumulate workers, or overwrite a newer copy when it finally replies.
+final class DictationClipboard {
+    static let shared = DictationClipboard()
+    private let queue = DispatchQueue(label: "ru.panda.giga.clipboard")
+    private let name: NSPasteboard.Name
+    private var busy = false // main queue only; includes the restore interval
+    var isBusy: Bool { busy }
+    init(name: NSPasteboard.Name = .general) { self.name = name }
+    func readText(_ done: @escaping (String?) -> Void) {
+        snapshot { saved in
+            guard let saved else { done(nil); return }
+            self.busy = false
+            done(saved.items.first?[.string].flatMap { String(data: $0, encoding: .utf8) })
+        }
+    }
+    private struct Snapshot {
+        let mark: Int
+        let items: [[NSPasteboard.PasteboardType: Data]]
+    }
+
+    private func snapshot(_ done: @escaping (Snapshot?) -> Void) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !busy else { done(nil); return }
+        busy = true
+        var answered = false // callbacks below are main-queue serialized
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            if !answered { answered = true; done(nil) }
+        }
+        queue.async {
+            let pb = NSPasteboard(name: self.name)
+            let mark = pb.changeCount
+            var values = [[NSPasteboard.PasteboardType: Data]]()
+            var complete = true
+            for item in pb.pasteboardItems ?? [] {
+                var value = [NSPasteboard.PasteboardType: Data]()
+                for type in item.types {
+                    guard ProcessInfo.processInfo.systemUptime < deadline else { complete = false; break }
+                    // A declared optional format may legitimately have no data.
+                    if let data = item.data(forType: type) { value[type] = data }
+                    if ProcessInfo.processInfo.systemUptime >= deadline { complete = false; break }
+                }
+                values.append(value)
+                if !complete { break }
+            }
+            let valid = complete && pb.changeCount == mark
+                && ProcessInfo.processInfo.systemUptime < deadline
+            DispatchQueue.main.async {
+                if answered { self.busy = false; return }
+                answered = true
+                if !valid { self.busy = false }
+                done(valid ? Snapshot(mark: mark, items: values) : nil)
+            }
+        }
+    }
+
+    private func restore(_ saved: Snapshot, on pb: NSPasteboard, ifMark mark: Int) {
+        guard pb.changeCount == mark else { return }
+        let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+        pb.clearContents()
+        guard !saved.items.contains(where: { $0[concealed] != nil }) else { return }
+        let items = saved.items.map { value -> NSPasteboardItem in
+            let item = NSPasteboardItem()
+            for (type, data) in value { item.setData(data, forType: type) }
+            return item
+        }
+        if !items.isEmpty { pb.writeObjects(items) }
+    }
+
+    /// action runs on main after writing. Return true only if Cmd-V was posted
+    /// into the intended field. Otherwise leave the dictation for manual paste.
+    func paste(_ text: String, allowed: @escaping () -> Bool,
+               action: @escaping (@escaping () -> Bool, @escaping (Bool) -> Void) -> Void, failed: @escaping () -> Void) {
+        snapshot { saved in
+            guard let saved else { failed(); return }
+            guard allowed() else { self.busy = false; failed(); return }
+            self.queue.async {
+                let pb = NSPasteboard(name: self.name)
+                guard pb.changeCount == saved.mark else {
+                    DispatchQueue.main.async { self.busy = false; failed() }; return
+                }
+                putDictation(text, on: pb)
+                let mark = pb.changeCount
+                DispatchQueue.main.async {
+                    guard allowed() else {
+                        self.queue.async {
+                            self.restore(saved, on: pb, ifMark: mark)
+                            DispatchQueue.main.async { self.busy = false; failed() }
+                        }
+                        return
+                    }
+                    action({ NSPasteboard(name: self.name).changeCount == mark }) { restore in
+                        self.queue.asyncAfter(deadline: .now() + 0.5) {
+                            if restore { self.restore(saved, on: pb, ifMark: mark) }
+                            DispatchQueue.main.async { self.busy = false }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Copy fallback for apps that do not expose selected text through AX.
+    /// No copied value or AppKit pasteboard item crosses queues.
+    enum Selection: Equatable { case text(String), noChange, failed }
+    func selection(allowed: @escaping () -> Bool, copy: @escaping () -> Void,
+                   done: @escaping (Selection) -> Void) {
+        let admissionDeadline = Date().addingTimeInterval(1)
+        func admit() {
+            guard allowed() else { done(.failed); return }
+            if self.busy && Date() < admissionDeadline {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: admit)
+            } else { self.captureSelection(allowed: allowed, copy: copy, done: done) }
+        }
+        admit()
+    }
+
+    private func captureSelection(allowed: @escaping () -> Bool, copy: @escaping () -> Void,
+                                  done: @escaping (Selection) -> Void) {
+        snapshot { saved in
+            guard let saved else { done(.failed); return }
+            guard allowed() else { self.busy = false; done(.failed); return }
+            var answered = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                if !answered { answered = true; done(.failed) }
+            }
+            let copyDeadline = Date().addingTimeInterval(0.8)
+            copy()
+            func poll() {
+                let pb = NSPasteboard(name: self.name)
+                let mark = pb.changeCount
+                if mark == saved.mark, Date() < copyDeadline {
+                    self.queue.asyncAfter(deadline: .now() + 0.05, execute: poll)
+                    return
+                }
+                var text: String?
+                if mark != saved.mark, !(pb.types?.contains(.fileURL) ?? false) {
+                    text = pb.string(forType: .string)
+                }
+                // If the provider changed ownership while supplying data, never
+                // restore over the user's newer copy.
+                if mark != saved.mark { self.restore(saved, on: pb, ifMark: mark) }
+                let result: Selection = mark == saved.mark ? .noChange : text.map(Selection.text) ?? .failed
+                DispatchQueue.main.async {
+                    self.busy = false
+                    if !answered { answered = true; done(allowed() ? result : .failed) }
+                }
+            }
+            self.queue.asyncAfter(deadline: .now() + 0.05, execute: poll)
+        }
+    }
+}

@@ -18,10 +18,17 @@ final class Mic {
     /// Микрофон между записями НЕ открыт (оранжевой точки нет) — устройство
     /// включается только на время start()…stop().
     private var engine: AVAudioEngine?
+    private var configurationChanged = false
     private var chunks: [[Float]] = []   // куски записи в родной частоте, моно
     private var nativeRate: Double = 0
     private let lock = NSLock()
     private(set) var isRecording = false
+    private let audioQueue = DispatchQueue(label: "ru.panda.giga.audio")
+    private var stopping = false // main queue
+    private var pendingStart: ((Error?) -> Void)? // at most one held press
+    private var engineActive = false // audioQueue only
+    private let startOverride: (() throws -> Void)?
+    private let stopOverride: (() -> [Float])?
 
     /// Громкость для волны, 0…1. Считается в звуковом потоке, читается
     /// из главного — живёт под тем же локом, что и куски записи.
@@ -56,22 +63,47 @@ final class Mic {
     /// и волна казалась вялой. 0.6 поднимает середину, не трогая края.
     private static let curve: Float = 0.6
 
-    init() {
+    // Injection exercises the real lifecycle without opening a microphone.
+    init(startEngine: (() throws -> Void)? = nil, stopEngine: (() -> [Float])? = nil) {
+        startOverride = startEngine; stopOverride = stopEngine
         // Сменился микрофон или его формат (воткнули наушники, виртуалка
         // передёрнула устройство) — старый движок больше не годится,
         // следующая запись соберёт себе новый.
         NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main
         ) { [weak self] _ in
-            guard let self, !self.isRecording else { return }
-            self.engine = nil
+            guard let self else { return }
+            self.audioQueue.async {
+                if self.engineActive { self.configurationChanged = true }
+                else { self.engine = nil }
+            }
         }
     }
 
     /// Запускает запись. Бросает, если устройство не завелось, — тогда
     /// звука точно нет и надо честно сказать об этом человеку.
-    func start() throws {
-        guard !isRecording else { return }
+    func start(_ done: @escaping (Error?) -> Void) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !isRecording else {
+            done(OrtError.failed("микрофон уже запущен")); return
+        }
+        if stopping { isRecording = true; pendingStart = done; return }
+        isRecording = true
+        audioQueue.async {
+            var error: Error?
+            do {
+                if let start = self.startOverride { try start() }
+                else { try self.startEngine() }
+            } catch let failure { error = failure }
+            let failure = error
+            DispatchQueue.main.async {
+                if failure != nil, self.pendingStart == nil { self.isRecording = false }
+                done(failure)
+            }
+        }
+    }
+
+    private func startEngine() throws {
         let e = engine ?? AVAudioEngine()
         let input = e.inputNode
         let fmt = input.inputFormat(forBus: 0) // родной формат устройства
@@ -130,20 +162,46 @@ final class Mic {
             throw error
         }
         engine = e
-        isRecording = true
+        engineActive = true
     }
 
     /// Останавливает запись и отдаёт всё записанное: 16 кГц, моно.
-    func stop() -> [Float] {
-        guard isRecording, let e = engine else { return [] }
+    func stop(_ done: @escaping ([Float]?) -> Void) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard isRecording else { DispatchQueue.main.async { done(nil) }; return }
+        isRecording = false
+        if pendingStart != nil {
+            pendingStart = nil; DispatchQueue.main.async { done(nil) }; return
+        }
+        stopping = true
+        audioQueue.async {
+            let samples = self.stopOverride?() ?? self.stopEngine()
+            DispatchQueue.main.async {
+                self.stopping = false
+                if let pending = self.pendingStart {
+                    self.pendingStart = nil; self.isRecording = false
+                    self.start(pending)
+                }
+                done(samples)
+            }
+        }
+    }
+
+    private func stopEngine() -> [Float]? {
+        guard engineActive, let e = engine else { return nil }
         e.inputNode.removeTap(onBus: 0)
         e.stop() // сам движок оставляем — следующий старт быстрее
-        isRecording = false
+        engineActive = false
+        if configurationChanged {
+            engine = nil
+            configurationChanged = false
+        }
         lock.lock()
-        let native = chunks.flatMap { $0 }
+        let recorded = chunks
         chunks = []
         levelPeak = 0; levelHeld = 0; levelSeen = false // микрофон закрыт — волне показывать нечего
         lock.unlock()
+        let native = recorded.flatMap { $0 }
         return Self.resample(native, from: nativeRate, to: 16000)
     }
 

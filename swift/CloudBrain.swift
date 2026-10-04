@@ -228,11 +228,16 @@ struct CloudBrainView: View {
                                     .frame(height: 18)
                                     .onChange(of: state.key) { _ in state.keyChanged() }
                                 Button(L("Вставить из буфера", "Paste")) {
-                                    let pb = NSPasteboard.general.string(forType: .string) ?? ""
-                                    let trimmed = pb.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    guard !trimmed.isEmpty else { return }
-                                    state.key = trimmed
-                                    state.keyChanged()
+                                    let provider = state.providerId, address = state.address
+                                    let original = state.key
+                                    DictationClipboard.shared.readText { text in
+                                        guard state.providerId == provider, state.address == address,
+                                              state.key == original else { return }
+                                        let trimmed = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                                        guard !trimmed.isEmpty else { return }
+                                        state.key = trimmed
+                                        state.keyChanged()
+                                    }
                                 }
                                 .controlSize(.small)
                             }
