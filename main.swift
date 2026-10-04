@@ -1619,6 +1619,18 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settingsChanged()
     }
 
+    /// Keep each dictation on the clipboard as an ordinary copy instead of giving back what was
+    /// there: for virtual machines and remote desktops, where it is pasted by hand. Off by default.
+    var keepOnClipboard: Bool {
+        get { UserDefaults.standard.bool(forKey: "keepOnClipboard") }
+        set { UserDefaults.standard.set(newValue, forKey: "keepOnClipboard") }
+    }
+
+    @objc func toggleKeepOnClipboard() {
+        keepOnClipboard.toggle()
+        settingsChanged()
+    }
+
     /// Одно ли это предложение. Знак конца внутри текста (а не в самом
     /// конце) значит, что предложений несколько: тогда не трогаем ничего.
     /// Сокращения вроде «т.д.» тоже попадают под это правило — и хорошо,
@@ -1658,7 +1670,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let current = take
         let target = takeTarget
         let focus = takeFocus
-        clipboard.paste(text, allowed: { [weak self] in
+        clipboard.paste(text, keepOnClipboard: keepOnClipboard, allowed: { [weak self] in
             guard let self else { return false }
             return self.take == current && !self.mic.isRecording
                 && NSWorkspace.shared.frontmostApplication?.processIdentifier == target

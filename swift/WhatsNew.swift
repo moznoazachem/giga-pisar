@@ -8,13 +8,9 @@ import AppKit
 
 /// Что изменилось в ЭТОЙ версии. Обновлять при каждом выпуске вместе с номером.
 let WHATS_NEW: [String] = uiIsRussian ? [
-    "Обновления проверяются строже: Писарь ставит только то, что подписано нашим сертификатом Apple",
-    "Скачанные модели сверяются по контрольной сумме, а локальный Мозг закрыт от других программ паролем",
-    "Пароль, скопированный из менеджера паролей, больше не задерживается в буфере после диктовки",
+    "Новый переключатель «Оставлять надиктованное в буфере» в настройках: для виртуальных машин и удалённых рабочих столов",
 ] : [
-    "Stricter update check: Pisar installs only what is signed with our Apple certificate",
-    "Downloaded models are checked by checksum, and the local Brain is closed to other programs with a key",
-    "A password copied from a password manager no longer lingers on the clipboard after dictation",
+    "New switch “Keep Dictation on the Clipboard” in Settings: for virtual machines and remote desktops",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.

@@ -96,6 +96,15 @@ struct DictationPage: View {
                         .labelsHidden().toggleStyle(.switch).controlSize(.mini)
                 }
                 RowDivider()
+                SettingsRow(icon: "doc.on.clipboard", color: sys(.systemTeal),
+                            title: L("Оставлять надиктованное в буфере", "Keep Dictation on the Clipboard"),
+                            subtitle: L("Текст вставляется как обычно и остаётся в буфере обмена. Удобно для виртуальных машин и удалённых рабочих столов: вставить его там через ⌘V.",
+                                        "The text is inserted as usual and stays on the clipboard. Handy for virtual machines and remote desktops: paste it there with ⌘V.")) {
+                    Toggle("", isOn: Binding(get: { model.app.keepOnClipboard },
+                                             set: { _ in model.act { app.toggleKeepOnClipboard() } }))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                }
+                RowDivider()
                 SettingsRow(icon: "music.note.slash", color: sys(.systemRed),
                             title: L("Приглушать звук во время диктовки", "Mute Sound While Dictating"),
                             subtitle: L("Громкость вернётся сама, как только отпустишь клавишу.",
