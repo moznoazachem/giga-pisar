@@ -52,6 +52,18 @@ struct RecordingStartTests {
         DispatchQueue.main.async { finished = true }
         pump(until: { finished })
         precondition(starts == 2)
+        precondition(gate.take == 0)
+        precondition(gate.acceptTranscription("previous text"))
+        let previousTake = gate.take
+        for (samples, aborted) in [(1600, false), (16000, true), (0, false)] {
+            precondition(!RecordingStart.shouldTranscribe(sampleCount: samples, aborted: aborted, minimumSamples: 6400))
+            precondition(gate.take == previousTake, "Tap, shortcut or failed start superseded a result")
+        }
+        precondition(!gate.acceptTranscription(" \n "))
+        precondition(gate.take == previousTake)
+        precondition(RecordingStart.shouldTranscribe(sampleCount: 6400, aborted: false, minimumSamples: 6400))
+        precondition(gate.acceptTranscription("new text"))
+        precondition(gate.take == previousTake + 1)
         print("RecordingStart: modifier isolation, release, stale callback, recovery PASS")
     }
 

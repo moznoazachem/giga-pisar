@@ -150,6 +150,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var lastText: String?
     private var recoveredTakes: [Int: [String]] = [:] // memory only; never logged
     private func saveDictation(_ text: String, take current: Int) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         var versions = recoveredTakes[current] ?? []
         if !versions.contains(text) { versions.append(text) }
@@ -157,12 +158,25 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if versions.count > 10 { versions.remove(at: 1) }
         recoveredTakes[current] = versions
         for key in recoveredTakes.keys.sorted().dropLast(20) { recoveredTakes.removeValue(forKey: key) }
+        recoveryItem?.isEnabled = true
     }
     private var recoveryWindow: NSWindow?
     private let clipboard = DictationClipboard.shared
-    private var take = 0
-    private var takeTarget: pid_t = 0
-    private var takeFocus: AXUIElement?
+    private var take: Int { recordingStart.take }
+    private final class TakeContext {
+        var target: pid_t = 0
+        var focus: AXUIElement?
+        var selection: String?
+        var pending = false
+        var failed = false
+        var ready: (() -> Void)?
+        var recognizing = false
+    }
+    private var context = TakeContext()
+    private var recordingContext: TakeContext?
+    private var takeTarget: pid_t { context.target }
+    private var takeFocus: AXUIElement? { context.focus }
+    private weak var recoveryItem: NSMenuItem?
 
     @objc func showLastDictation() {
         if recoveryWindow == nil {
@@ -197,10 +211,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     /// Текст, который был выделен в момент нажатия рации. Если он есть и
     /// мозг включён, речь считается командой над ним, а не диктовкой.
-    var selectionAtStart: String?
-    private var selectionPending = false
-    private var selectionFailed = false
-    private var selectionReady: (() -> Void)?
+    var selectionAtStart: String? { get { context.selection } set { context.selection = newValue } }
+    private var selectionPending: Bool { context.pending }
+    private var selectionFailed: Bool { context.failed }
+    private var selectionReady: (() -> Void)? { get { context.ready } set { context.ready = newValue } }
     /// Пока мы сами жмём клавиши (⌘C за пользователя), монитор keyDown
     /// не должен принимать их за «шорткат, отменяем запись».
     var syntheticKeyUntil = Date.distantPast
@@ -418,11 +432,13 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let recovery = NSMenuItem(title: L("Последние диктовки…", "Recent dictations…"),
                                   action: #selector(showLastDictation), keyEquivalent: "")
         recovery.target = self
-        menu.addItem(recovery)
+        recovery.isEnabled = !recoveredTakes.isEmpty
+        recoveryItem = recovery
 
         menu.addItem(mkHeader(L("Гига Писарь \(APP_VERSION)", "Giga Pisar \(APP_VERSION)"),
                               sub: L("зажми \(hotkeyInText()) и говори",
                                      "hold \(hotkeyInText()) and speak")))
+        menu.addItem(recovery)
         menu.addItem(NSMenuItem.separator())
 
         // Only quick switches, each with one grey line saying what it is; everything else is in Settings.
@@ -647,7 +663,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// посреди диктовки или распознавания не дёргаемся — ждём покоя.
     func quitForUpdateWhenIdle() {
         guard state == .idle, !mic.isRecording, !rightCmdDown, !clipboard.isBusy,
-              pendingOperations == 0 else {
+              pendingOperations == 0, deferredOperations == 0, !selectionPending else {
             updateWindow.busy(L("Дождусь конца диктовки и перезапущусь…",
                                 "Waiting for the dictation to finish, then relaunching…"))
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
@@ -1193,26 +1209,24 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func beginRecording() {
         guard !mic.isRecording else { return }
-        take += 1
-        Chips.shared.hide()
-        takeTarget = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
-        takeFocus = dictationFocus()
-        let current = take
-        selectionAtStart = nil
-        if selectionReady != nil { notifySavedDictation() }
-        selectionPending = false; selectionFailed = false; selectionReady = nil
-        recStart = Date()
+        let recording = TakeContext()
+        recording.target = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
+        recording.focus = dictationFocus()
+        recordingContext = recording
+        recStart = nil
         mic.start { [weak self] error in
-            guard let self, self.take == current else { return }
+            guard let self, self.recordingContext === recording else { return }
             if let error {
+                self.recordingContext = nil
                 NSLog("Гига Писарь: микрофон не завёлся — \(error)")
-                self.setState(.idle)
+                self.refreshWorkState()
                 Toast.shared.show(L("Микрофон не завёлся — звук не идёт. Проверь микрофон в настройках системы.",
                                     "The microphone didn't start — no audio. Check the microphone in System Settings."))
                 return
             }
             guard self.mic.isRecording else { return }
             guard self.rightCmdDown else { self.stopRecording(abort: true); return }
+            self.recStart = Date()
             self.cancelled = false
             self.hushSound()
             self.setState(.rec)
@@ -1220,17 +1234,16 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.wave.show(near: WavePanel.place == .cursor ? typingAnchor() : NSEvent.mouseLocation)
             }
         }
-        captureSelection()
+        captureSelection(recording)
     }
 
     /// Что выделено в момент нажатия рации. Только при включённом мозге
     /// и не в терминале (там выделения через Accessibility нет).
-    func captureSelection() {
-        selectionAtStart = nil
+    private func captureSelection(_ recording: TakeContext) {
         guard !frontIsTerminal, Brain.shared.ready, Brain.shared.onSelection else { return }
         let (text, length, silent) = selectedTextViaAX()
         if let text {
-            selectionAtStart = text
+            recording.selection = text
             NSLog("Гига выделение: AX, \(text.count) знаков")
             hintSelection(text.count)
             return
@@ -1240,22 +1253,26 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // как был: момент наш, никакой гонки с чужой вставкой тут нет.
         // Pages, Keynote и Numbers не отдают даже диапазон. У них о выделении
         // говорит пункт «Скопировать» в меню: включён, значит есть что брать.
-        guard AXIsProcessTrusted(),
-              length > 0 || (silent && frontMenuShortcutEnabled("C")) else { return }
-        let current = take
-        selectionPending = true
+        // If AX cannot inspect the menu within its budget, try bounded Cmd-C
+        // instead of silently disabling selection commands in iWork.
+        guard AXIsProcessTrusted() else { return }
+        let copyEnabled = length == 0 && silent && frontMenuShortcutEnabled("C")
+        let uncertainIWork = length == 0 && silent && !copyEnabled && AXBudget.sawCannotComplete
+            && NSWorkspace.shared.frontmostApplication?.bundleIdentifier?.hasPrefix("com.apple.iWork.") == true
+        guard length > 0 || copyEnabled || uncertainIWork else { return }
+        recording.pending = true
         clipboard.selection(allowed: { [weak self] in
             guard let self else { return false }
-            return self.take == current
-                && NSWorkspace.shared.frontmostApplication?.processIdentifier == self.takeTarget
+            return (self.recordingContext === recording || self.context === recording || recording.recognizing)
+                && NSWorkspace.shared.frontmostApplication?.processIdentifier == recording.target
         }, copy: { [weak self] in self?.pressKey(8, .maskCommand) }) { [weak self] s in
-            guard let self, self.take == current else { return }
-            self.selectionPending = false
+            guard let self else { return }
+            recording.pending = false
             if case .text(let s) = s, !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                self.selectionAtStart = s
-                if self.mic.isRecording { self.hintSelection(s.count) }
-            } else { self.selectionFailed = s != .noChange || length > 0 }
-            let ready = self.selectionReady; self.selectionReady = nil
+                recording.selection = s
+                if self.mic.isRecording && self.recordingContext === recording { self.hintSelection(s.count) }
+            } else { recording.failed = s != .noChange || length > 0 || uncertainIWork }
+            let ready = recording.ready; recording.ready = nil
             ready?()
         }
     }
@@ -1316,89 +1333,96 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard mic.isRecording else { return }
         restoreSound()
         cancelled = abort
-        let dur = Date().timeIntervalSince(recStart ?? Date())
-        let current = take
+        let held = Date().timeIntervalSince(recStart ?? Date())
+        let recording = recordingContext
         mic.stop { [weak self] samples in
             guard let self else { return }
-            guard let samples, !abort, dur >= MIN_SECONDS else {
-                if self.take == current { self.setState(.idle) }
+            if self.recordingContext === recording { self.recordingContext = nil }
+            guard let samples, RecordingStart.shouldTranscribe(sampleCount: samples.count, aborted: abort,
+                                                               minimumSamples: Int(MIN_SECONDS * 16000)) else {
+                self.refreshWorkState()
+                if !abort, held >= MIN_SECONDS {
+                    Toast.shared.show(L("Микрофон не передал достаточно звука — проверь выбранный микрофон",
+                                        "Not enough audio reached the recording — check the selected microphone"))
+                }
                 return
             }
-            self.prepareTranscription(samples, take: current)
+            self.prepareTranscription(samples, recording: recording ?? TakeContext())
         }
         setState(.busy)
     }
 
-    private func prepareTranscription(_ samples: [Float], take current: Int) {
-        pendingOperations += 1
-        recognizerQueue.async { [weak self] in
-            // Conversion, silence detection and WAV I/O never run on the UI queue.
-            let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
-            guard peak > 0.0015 else {
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    self.pendingOperations -= 1
-                    guard self.take == current else { return }
-                    self.setState(.idle)
-                    Toast.shared.show(L("Микрофон отдал тишину — звук до записи не дошёл",
-                                        "The microphone delivered silence — no audio reached the recording"))
-                }
-                return
-            }
-            Audio.writeWav(samples, rate: 16000, to: WAV_PATH)
-            DispatchQueue.main.async {
-                self?.transcribe(samples, take: current)
-            }
-        }
+    private var recognizingCandidates = 0
+    private var deferredOperations = 0
+    private var recordingInProgress: Bool {
+        mic.isRecording || rightCmdDown || recordingContext != nil || recognizingCandidates > 0
+    }
+    private func refreshWorkState() {
+        guard !mic.isRecording, recordingContext == nil else { return }
+        setState(pendingOperations > 0 || selectionPending || deferredOperations > 0 ? .busy : .idle)
     }
 
-    // MARK: распознавание и вставка
-
-    func transcribe(_ samples: [Float], take current: Int) {
-        if take == current { setState(.busy) }
+    private func prepareTranscription(_ samples: [Float], recording: TakeContext) {
+        pendingOperations += 1
+        recognizingCandidates += 1
+        recording.recognizing = true
         recognizerQueue.async { [weak self] in
-            guard let r = self?.recognizer else {
-                // Модель не нашлась вовсе (про это уже было окно при запуске).
-                // Если она ещё грузилась, мы сюда не попадём: загрузка стоит
-                // в этой же очереди первой, и работа дождалась её сама.
-                DispatchQueue.main.async {
-                    self?.pendingOperations -= 1
-                    guard self?.take == current else { return }
-                    self?.setState(.idle)
-                    self?.flashError()
-                }
-                return
+            let silent = samples.reduce(Float(0)) { max($0, abs($1)) } <= 0.0015
+            var text: String?
+            if !silent {
+                Audio.writeWav(samples, rate: 16000, to: WAV_PATH)
+                do { text = try self?.recognizer?.transcribe(samples: samples, rate: 16000) }
+                catch { NSLog("Гига Писарь: не распознал — \(error)") }
             }
-            let text: String
-            do {
-                text = try r.transcribe(samples: samples, rate: 16000)
-            } catch {
-                NSLog("Гига Писарь: не распознал — \(error)")
-                DispatchQueue.main.async {
-                    self?.pendingOperations -= 1
-                    guard self?.take == current else { return }
-                    self?.setState(.idle)
-                    self?.flashError()
-                }
-                return
-            }
+            let output = text
             DispatchQueue.main.async {
                 guard let self else { return }
-                defer { self.pendingOperations -= 1 }
-                self.saveDictation(text, take: current)
-                self.deliverTranscription(text, take: current)
+                self.pendingOperations -= 1
+                self.recognizingCandidates -= 1
+                recording.recognizing = false
+                guard let output, self.recordingStart.acceptTranscription(output) else {
+                    self.refreshWorkState()
+                    if silent {
+                        Toast.shared.show(L("Микрофон отдал тишину — звук до записи не дошёл",
+                                            "The microphone delivered silence — no audio reached the recording"))
+                    } else if self.state == .idle, !self.recordingInProgress { self.flashError() }
+                    return
+                }
+                Chips.shared.hide()
+                if self.selectionReady != nil { self.notifySavedDictation() }
+                self.context.ready = nil
+                self.context = recording
+                self.saveDictation(output, take: self.take)
+                self.deliverTranscription(output, take: self.take)
             }
         }
     }
 
-    private func deliverTranscription(_ text: String, take current: Int) {
+    private func deliverTranscription(_ text: String, take current: Int, until: Date = Date().addingTimeInterval(60)) {
                 guard self.take == current else { if !text.isEmpty { self.notifySavedDictation() }; return }
-                guard !text.isEmpty else { setState(.idle); flashError(); return }
-                if selectionPending {
-                    selectionReady = { [weak self] in self?.deliverTranscription(text, take: current) }
+                guard Date() < until else { notifySavedDictation(); refreshWorkState(); return }
+                if recordingInProgress {
+                    deferredOperations += 1
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                        guard let self else { return }
+                        self.deferredOperations -= 1
+                        self.deliverTranscription(text, take: current, until: until)
+                    }
                     return
                 }
-                guard !selectionFailed else { setState(.idle); notifySavedDictation(); return }
+                guard !text.isEmpty else { refreshWorkState(); flashError(); return }
+                if selectionPending {
+                    selectionReady = { [weak self] in self?.deliverTranscription(text, take: current, until: until) }
+                    return
+                }
+                guard !selectionFailed else {
+                    setState(.idle)
+                    if keepOnClipboard {
+                        clipboard.paste(text, keepOnClipboard: true, stale: { [weak self] in self?.take != current }, allowed: { false },
+                                        action: { _, done in done(false) }, failed: {})
+                    }
+                    notifySavedDictation(); return
+                }
                 // Было выделение при нажатии рации? Тогда это команда над ним.
                 if self.runSelectionCommand(text) { return }
                 // Keep raw text available in the menu even if Brain/clipboard stalls.
@@ -1517,9 +1541,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard chars <= 4000 else { interrupted(); return }
             var remaining = max(0, chars)
             func batch() {
-                guard self.take == current, !self.mic.isRecording, !self.rightCmdDown,
+                guard self.take == current, !self.recordingInProgress,
                       NSWorkspace.shared.frontmostApplication?.processIdentifier == target,
-                      matchesDictationFocus(self.takeFocus) else { interrupted(); return }
+                      matchesDictationFocus(self.takeFocus, strict: true) else { interrupted(); return }
                 if remaining > 0 { deletionStarted = true }
                 for _ in 0..<min(25, remaining) { self.pressKey(51, []) }
                 remaining -= min(25, remaining)
@@ -1528,14 +1552,14 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             batch()
         } else {
-            guard !mic.isRecording, NSWorkspace.shared.frontmostApplication?.processIdentifier == target,
-                  matchesDictationFocus(takeFocus) else { interrupted(); return }
+            guard !recordingInProgress, NSWorkspace.shared.frontmostApplication?.processIdentifier == target,
+                  matchesDictationFocus(takeFocus, strict: true) else { interrupted(); return }
             pressKey(6, .maskCommand) // ⌘Z
             deletionStarted = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                guard self.take == current, !self.mic.isRecording,
+                guard self.take == current, !self.recordingInProgress,
                       NSWorkspace.shared.frontmostApplication?.processIdentifier == target,
-                      matchesDictationFocus(self.takeFocus) else { interrupted(); return }
+                      matchesDictationFocus(self.takeFocus, strict: true) else { interrupted(); return }
                 done(true)
             }
         }
@@ -1658,7 +1682,20 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// simplify: only plain dictation goes through «Упрощать синтаксис»; Brain answers,
     /// edits of a selection and «Вернуть как было» are put in exactly as they are.
     func paste(_ text: String, offerChips: Bool = false, spacing: Bool = true, simplify: Bool = false,
-               replacing: Int? = nil, completion: (() -> Void)? = nil) {
+               replacing: Int? = nil, completion: (() -> Void)? = nil, until: Date = Date().addingTimeInterval(60)) {
+        guard Date() < until else { saveDictation(text, take: take); notifySavedDictation(); refreshWorkState(); return }
+        if recordingInProgress {
+            deferredOperations += 1
+            let current = take
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                guard let self else { return }
+                self.deferredOperations -= 1
+                guard self.take == current else { self.notifySavedDictation(); return }
+                self.paste(text, offerChips: offerChips, spacing: spacing, simplify: simplify,
+                           replacing: replacing, completion: completion, until: until)
+            }
+            return
+        }
         var text = simplify ? simplified(text) : text
         if spacing, let last = text.last, !last.isWhitespace { text += " " }
         saveDictation(text, take: take)
@@ -1670,18 +1707,31 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let current = take
         let target = takeTarget
         let focus = takeFocus
-        clipboard.paste(text, keepOnClipboard: keepOnClipboard, allowed: { [weak self] in
+        var interruptedByRecording = false
+        func retryAfterRecording() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard self.take == current else { self.notifySavedDictation(); return }
+                self.paste(text, offerChips: offerChips, spacing: false, replacing: replacing,
+                           completion: completion, until: until)
+            }
+        }
+        clipboard.paste(text, keepOnClipboard: keepOnClipboard, stale: { [weak self] in self?.take != current }, allowed: { [weak self] in
             guard let self else { return false }
-            return self.take == current && !self.mic.isRecording
+            if self.recordingInProgress { interruptedByRecording = true; return false }
+            return self.take == current
                 && NSWorkspace.shared.frontmostApplication?.processIdentifier == target
                 && matchesDictationFocus(focus)
         }, action: { [weak self] isOurs, done in
             guard let self else { done(false); return }
+            if self.recordingInProgress { done(true); retryAfterRecording(); return }
             let insert = {
-                guard self.take == current, !self.mic.isRecording,
+                guard self.take == current, !self.recordingInProgress,
                       NSWorkspace.shared.frontmostApplication?.processIdentifier == target,
                       matchesDictationFocus(focus) else {
-                    if replacing != nil {
+                    if replacing == nil && self.take == current && self.recordingInProgress {
+                        done(true); retryAfterRecording(); return
+                    } else if replacing != nil {
                         Toast.shared.show(L("Старый текст мог быть удалён; вставка остановлена. Новый текст — в меню → Последние диктовки.",
                                             "Previous text may be removed; paste stopped. New text: menu → Recent dictations."))
                     } else { self.notifySavedDictation() }
@@ -1702,6 +1752,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             } else { insert() }
         }, failed: {
+            if interruptedByRecording { retryAfterRecording(); return }
             Toast.shared.show(L("Вставка недоступна. Текст сохранён: меню → Последние диктовки.",
                                 "Paste unavailable. Text saved: menu → Recent dictations."))
         })
@@ -1757,6 +1808,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
 // Diagnostics: `Giga --brain-test in.txt` runs the saved Brain settings on the text
 // ("… Писарь, <command>" or plain text as "исправь") and prints the answer.
+DictationClipboard.runReaderIfRequested()
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--brain-test" {
     let input = ((try? String(contentsOfFile: CommandLine.arguments[2], encoding: .utf8)) ?? "")
         .trimmingCharacters(in: .whitespacesAndNewlines)

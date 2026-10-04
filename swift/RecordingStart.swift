@@ -3,6 +3,18 @@ import Foundation
 /// Main-queue only. A released or superseded press must never start recording.
 final class RecordingStart {
     private var pending: DispatchWorkItem?
+    private(set) var take = 0
+
+    static func shouldTranscribe(sampleCount: Int, aborted: Bool, minimumSamples: Int) -> Bool {
+        !aborted && sampleCount >= minimumSamples && sampleCount > 0
+    }
+
+    func acceptTranscription(_ text: String) -> Bool {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        take += 1
+        return true
+    }
 
     func schedule(_ start: @escaping () -> Void) -> DispatchWorkItem {
         dispatchPrecondition(condition: .onQueue(.main))

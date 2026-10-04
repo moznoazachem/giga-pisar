@@ -7,7 +7,10 @@ let BUSY_BAR: CGFloat = 0.35
     static func main() {
         let element = AXUIElementCreateApplication(getpid())
         precondition(matchesDictationFocus(nil, current: { fatalError("unknown original needs no query") }))
-        precondition(!matchesDictationFocus(element, current: { nil }))
+        precondition(!matchesDictationFocus(nil, strict: true, current: { nil }))
+        precondition(matchesDictationFocus(element, current: { nil }))
+        precondition(!matchesDictationFocus(element, strict: true, current: { nil }))
+        precondition(!matchesDictationFocus(element, current: { AXUIElementCreateApplication(getppid()) }))
         precondition(matchesDictationFocus(element, current: { element }))
         AXBudget.enter()
         let outer = AXBudget.deadline
@@ -33,6 +36,9 @@ let BUSY_BAR: CGFloat = 0.35
         precondition(called, "cooldown leaked to a different PID")
         AXBudget.leave()
         precondition(AXBudget.depth == 0)
+        AXBudget.enter()
+        precondition(!AXBudget.sawCannotComplete, "new top-level inspection must clear old failure")
+        AXBudget.leave()
         print("PASS AX nested budget, short remainder, per-PID cooldown; no external AX query")
     }
 }

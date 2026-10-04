@@ -18,6 +18,7 @@ private final class SlowProvider: NSObject, NSPasteboardItemDataProvider {
     }
     static func main() throws {
         setbuf(stdout, nil)
+        DictationClipboard.runReaderIfRequested()
         if CommandLine.arguments.count == 3 {
             let board = NSPasteboard(name: .init(CommandLine.arguments[2]))
             board.clearContents()
@@ -33,20 +34,25 @@ private final class SlowProvider: NSObject, NSPasteboardItemDataProvider {
         let board = NSPasteboard.withUniqueName()
         defer { board.releaseGlobally() }
         let clipboard = DictationClipboard(name: board.name)
+        func settle(_ minimum: Double) {
+            spin(minimum)
+            let deadline = Date().addingTimeInterval(7)
+            while clipboard.isBusy, Date() < deadline { spin(0.01) }
+        }
         func seed(_ s: String) { board.clearContents(); precondition(board.setString(s, forType: .string)) }
         func value() -> String? { board.string(forType: .string) }
 
         seed("original")
         var readOnly: String?
         clipboard.readText { readOnly = $0 }
-        spin(0.2)
+        settle(0.2)
         precondition(readOnly == "original" && value() == "original" && !clipboard.isBusy)
         print("PASS read-only text access shares queue and preserves clipboard")
         var pasted = false, failures = 0
         clipboard.paste("dictation", allowed: { true }, action: { _, done in
             precondition(value() == "dictation"); pasted = true; done(true)
         }, failed: { failures += 1 })
-        spin(0.75)
+        settle(0.75)
         precondition(pasted && failures == 0 && value() == "original")
         print("PASS normal paste and exact restore")
         let transient = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
@@ -56,29 +62,29 @@ private final class SlowProvider: NSObject, NSPasteboardItemDataProvider {
             precondition(!(board.types ?? []).contains(transient) && !(board.types ?? []).contains(generated))
             done(true)
         }, failed: { fatalError("keep snapshot failed") })
-        spin(0.8)
+        settle(0.8)
         precondition(value() == "keep for VM" && !clipboard.isBusy)
         clipboard.paste("temporary", keepOnClipboard: false, allowed: { true }, action: { _, done in
             precondition((board.types ?? []).contains(transient) && (board.types ?? []).contains(generated))
             done(true)
         }, failed: { fatalError("restore snapshot failed") })
-        spin(0.8)
+        settle(0.8)
         precondition(value() == "keep for VM")
         clipboard.paste("kept", keepOnClipboard: true, allowed: { true }, action: { _, done in
             seed("newer user copy"); done(true)
         }, failed: { fatalError("newer copy snapshot failed") })
-        spin(0.8)
+        settle(0.8)
         precondition(value() == "newer user copy" && !clipboard.isBusy)
         var keepChecks = 0, keepRejected = false
         clipboard.paste("stale kept copy", keepOnClipboard: true,
                         allowed: { keepChecks += 1; return keepChecks == 1 },
                         action: { _, _ in fatalError("stale action") },
                         failed: { keepRejected = true })
-        spin(0.8)
-        precondition(keepRejected && value() == "newer user copy" && !clipboard.isBusy)
+        settle(0.8)
+        precondition(keepRejected && value() == "stale kept copy" && !clipboard.isBusy)
         clipboard.paste("manual VM copy", keepOnClipboard: true, allowed: { true },
                         action: { _, done in done(false) }, failed: { fatalError("manual copy failed") })
-        spin(0.8)
+        settle(0.8)
         precondition(value() == "manual VM copy" && !clipboard.isBusy)
         seed("original")
         print("PASS keepOnClipboard: plain copy retained, default transient restored, newer user copy preserved")
@@ -86,7 +92,7 @@ private final class SlowProvider: NSObject, NSPasteboardItemDataProvider {
         clipboard.paste("dictation", allowed: { true }, action: { _, done in
             seed("new user copy"); done(true)
         }, failed: { failures += 1 })
-        spin(0.75)
+        settle(0.75)
         precondition(value() == "new user copy" && failures == 0)
         print("PASS newer user copy survives restore")
         var rejectedChangedPaste = false
@@ -98,32 +104,37 @@ private final class SlowProvider: NSObject, NSPasteboardItemDataProvider {
                 done(false)
             }
         }, failed: { fatalError("snapshot failed") })
-        spin(0.8)
+        settle(0.8)
         precondition(rejectedChangedPaste && value() == "copy during undo" && !clipboard.isBusy)
         seed("new user copy")
         print("PASS clipboard ownership detects change during asynchronous undo and preserves new copy")
 
+        var secondPaste = false
         clipboard.paste("first", allowed: { true }, action: { _, done in done(true) }, failed: { failures += 1 })
-        clipboard.paste("second", allowed: { true }, action: { _, _ in fatalError("overlap") }, failed: { failures += 1 })
-        spin(0.75)
-        precondition(failures == 1 && value() == "new user copy")
+        clipboard.paste("second", allowed: { true }, action: { _, done in secondPaste = true; done(true) }, failed: { failures += 1 })
+        let stressDeadline = Date().addingTimeInterval(8)
+        while (!secondPaste || clipboard.isBusy), Date() < stressDeadline {
+            _ = value() // intentional main-thread read stress: used to race the background writer
+            spin(0.005)
+        }
+        precondition(secondPaste && failures == 0 && value() == "new user copy")
         clipboard.paste("wrong target", allowed: { false }, action: { _, _ in fatalError("stale") }, failed: { failures += 1 })
-        spin(0.35)
-        precondition(failures == 2 && value() == "new user copy")
-        print("PASS overlapping and stale requests never write")
+        settle(0.35)
+        precondition(failures == 1 && value() == "new user copy")
+        print("PASS paste waits for restore; stale requests never write")
 
         var selected: DictationClipboard.Selection?
         clipboard.selection(allowed: { true }, copy: { seed("selected words") }, done: { selected = $0 })
-        spin(0.4)
+        settle(0.4)
         precondition(selected == .text("selected words") && value() == "new user copy")
         print("PASS selection copy/restore")
         clipboard.selection(allowed: { true }, copy: {}, done: { selected = $0 })
-        spin(1)
+        settle(1)
         precondition(selected == .noChange)
         clipboard.selection(allowed: { true }, copy: {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { seed("late selection") }
         }, done: { selected = $0 })
-        spin(0.8)
+        settle(0.8)
         precondition(selected == .text("late selection") && value() == "new user copy")
         print("PASS no selection differs from failure; delayed copy is captured and restored")
 
@@ -142,7 +153,7 @@ private final class SlowProvider: NSObject, NSPasteboardItemDataProvider {
         var healthyPaste = false
         clipboard.paste("healthy paste", allowed: { true }, action: { _, done in healthyPaste = true; done(true) },
                         failed: { fatalError("healthy 500ms provider rejected") })
-        spin(1.5)
+        settle(1.5)
         healthy.terminate(); healthy.waitUntilExit()
         precondition(healthyPaste && value() == "synthetic source")
         print("PASS healthy slow provider and unavailable optional format")
@@ -152,12 +163,12 @@ private final class SlowProvider: NSObject, NSPasteboardItemDataProvider {
         concealed.setData(Data(), forType: .init("org.nspasteboard.ConcealedType"))
         board.clearContents(); precondition(board.writeObjects([concealed]))
         clipboard.paste("test", allowed: { true }, action: { _, done in done(true) }, failed: { fatalError("concealed snapshot") })
-        spin(0.75); precondition(value() == nil)
+        settle(0.75); precondition(value() == nil)
         second.setString("second item", forType: .string)
         let first = NSPasteboardItem(); first.setString("first item", forType: .string)
         board.clearContents(); precondition(board.writeObjects([first, second]))
         clipboard.paste("test", allowed: { true }, action: { _, done in done(true) }, failed: { fatalError("multiple items") })
-        spin(0.75)
+        settle(0.75)
         precondition(board.pasteboardItems?.map { $0.string(forType: .string) } == ["first item", "second item"])
         print("PASS concealed not restored; multiple item data preserved")
 
@@ -170,48 +181,134 @@ private final class SlowProvider: NSObject, NSPasteboardItemDataProvider {
             if stopped { precondition(kill(child.processIdentifier, SIGSTOP) == 0) }
             let before = failures
             var heartbeat = false
-            var unexpectedPaste = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { heartbeat = true }
-            clipboard.paste("must not overwrite", allowed: { true }, action: { _, done in unexpectedPaste = true; done(false) }, failed: { failures += 1 })
-            spin(3.2)
-            let responsive = heartbeat && failures == before + 1
-            if !stopped {
-                for _ in 0..<10 {
-                    clipboard.paste("retry", allowed: { true }, action: { _, _ in fatalError("queued retry") }, failed: { failures += 1 })
-                }
-                precondition(failures == before + 11)
+            var lastBeat = ProcessInfo.processInfo.systemUptime, maxGap = 0.0
+            let timer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { _ in
+                let now = ProcessInfo.processInfo.systemUptime
+                maxGap = max(maxGap, now - lastBeat); lastBeat = now
             }
+            var fallbackPaste = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { heartbeat = true }
+            clipboard.paste("fallback text", allowed: { true }, action: { ours, done in
+                precondition(ours() && (board.types ?? []).contains(transient))
+                fallbackPaste = true; done(false)
+            }, failed: { failures += 1 })
+            spin(3.7)
+            // macOS can revoke a stopped owner's clipboard, changing its mark.
+            // In that case preserving the external change is the correct refusal.
+            let responsive = heartbeat && (fallbackPaste || (stopped && failures == before + 1))
+            precondition(!clipboard.isBusy)
+            if fallbackPaste { precondition(value() == "fallback text") }
+            else if stopped { seed("fresh copy after OS revocation") }
+            var nextPaste = false
+            clipboard.paste("next without restart", allowed: { true }, action: { _, done in nextPaste = true; done(false) },
+                            failed: { fatalError("blocked after reader timeout") })
+            settle(0.8)
+            precondition(nextPaste && value() == "next without restart" && !clipboard.isBusy)
             // macOS may revoke a stopped provider's ownership. The clipboard
             // then really is empty; a NEW paste may legitimately succeed.
             if stopped { precondition(kill(child.processIdentifier, SIGKILL) == 0) }
             else { spin(1.2); child.terminate() }
             child.waitUntilExit()
-            precondition(responsive && !unexpectedPaste)
+            precondition(responsive)
             seed("copy after failure")
             spin(0.5)
             precondition(value() == "copy after failure")
             var recovered = false
             clipboard.paste("retry succeeds", allowed: { true }, action: { _, done in recovered = true; done(true) }, failed: { fatalError("no recovery") })
-            spin(0.75)
+            settle(0.75)
             precondition(recovered && value() == "copy after failure")
-            print("PASS provider", stopped ? "stopped/killed" : "slow", "heartbeat, timeout, no late overwrite")
+            var recoveredSelection: DictationClipboard.Selection?
+            clipboard.selection(allowed: { true }, copy: { seed("selected after timeout") }, done: { recoveredSelection = $0 })
+            settle(0.3)
+            precondition(recoveredSelection == .text("selected after timeout") && value() == "copy after failure")
+            timer.invalidate()
+            precondition(maxGap < 0.5, "main queue stalled during provider/fallback/recovery: \(maxGap)s")
+            print("PASS provider", stopped ? "stopped/killed" : "slow", "heartbeat, timeout fallback, continued pastes, no late overwrite")
         }
 
         seed("before selection")
         let selectionProvider = Process(), selectionReady = Pipe()
         selectionProvider.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
         selectionProvider.arguments = ["slow", board.name.rawValue]; selectionProvider.standardOutput = selectionReady
-        var selectionTimedOut = false, selectionCalls = 0
+        var selectionTimedOut = false, selectionCalls = 0, reentrantPaste = false
         clipboard.selection(allowed: { true }, copy: {
             try! selectionProvider.run()
             precondition(selectionReady.fileHandleForReading.readData(ofLength: 1) == Data([82]))
-        }, done: { value in selectionCalls += 1; selectionTimedOut = value == .failed })
-        spin(3.3)
+        }, done: { value in
+            selectionCalls += 1; selectionTimedOut = value == .failed
+            clipboard.paste("paste from timeout callback", allowed: { true },
+                            action: { _, done in reentrantPaste = true; done(true) },
+                            failed: { fatalError("reentrant paste refused after selection timeout") })
+        })
+        settle(3.3)
         let responded = selectionTimedOut && selectionCalls == 1
-        selectionProvider.terminate(); selectionProvider.waitUntilExit()
-        spin(1.3)
+        // Let the synthetic 4s provider return before inspecting its contents.
+        spin(2)
         precondition(responded && selectionCalls == 1 && !clipboard.isBusy)
-        print("PASS selection read deadline and single completion after late provider")
+        precondition(reentrantPaste && value() == "before selection", "reentrant paste must preserve the restored original")
+        selectionProvider.terminate(); selectionProvider.waitUntilExit()
+        print("PASS selection deadline, single completion and late restore")
+
+        for fallback in [false, true] {
+            seed("original late restore")
+            let child = Process(), ready = Pipe()
+            child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+            child.arguments = ["slow", board.name.rawValue]; child.standardOutput = ready
+            var calls = 0
+            clipboard.selection(allowed: { true }, copy: {
+                try! child.run()
+                precondition(ready.fileHandleForReading.readData(ofLength: 1) == Data([82]))
+            }, done: { result in precondition(result == .failed); calls += 1 })
+            settle(3.3)
+            precondition(calls == 1)
+            if fallback {
+                clipboard.paste("new copy after timeout", allowed: { true }, action: { _, done in done(false) },
+                                failed: { fatalError("late-selection fallback refused") })
+            } else { seed("new copy after timeout") }
+            spin(2)
+            precondition(value() == "new copy after timeout" && calls == 1 && !clipboard.isBusy)
+            child.terminate(); child.waitUntilExit()
+            clipboard.paste("recovered snapshot", allowed: { true }, action: { _, done in done(true) },
+                            failed: { fatalError("selection reader did not recover") })
+            settle(0.75)
+            precondition(value() == "new copy after timeout" && !clipboard.isBusy)
+        }
+        print("PASS late selection preserves user copy/fallback paste and restores future pastes")
+        seed("original before queued copies")
+        var stale = false, refusedStale = false
+        clipboard.paste("hold admission", allowed: { true }, action: { _, done in done(true) }, failed: { fatalError("hold") })
+        clipboard.paste("obsolete", keepOnClipboard: true, stale: { stale }, allowed: { false },
+                        action: { _, _ in fatalError("stale action") }, failed: { refusedStale = true })
+        stale = true
+        clipboard.paste("latest", keepOnClipboard: true, allowed: { false },
+                        action: { _, _ in fatalError("copy-only action") }, failed: {})
+        spin(1.6)
+        precondition(refusedStale && value() == "latest" && !clipboard.isBusy)
+        print("PASS queued stale keep-copy cannot overwrite latest copy")
+        let large = String(repeating: "x", count: 256 * 1024)
+        seed(large)
+        clipboard.paste("large snapshot", allowed: { true }, action: { _, done in done(true) },
+                        failed: { fatalError("pipe did not drain a large snapshot") })
+        settle(1)
+        precondition(!clipboard.isBusy && value() == large)
+        print("PASS child pipe drains snapshots larger than pipe capacity")
+        let huge = String(repeating: "h", count: 17 * 1024 * 1024)
+        seed(huge)
+        var oversizedRefused = false
+        clipboard.paste("must not overwrite oversized copy", allowed: { true },
+                        action: { _, _ in fatalError("oversized snapshot misclassified as hung") },
+                        failed: { oversizedRefused = true })
+        settle(0.2)
+        precondition(oversizedRefused && value() == huge)
+        let ordered = NSPasteboardItem()
+        ordered.setData(Data("<b>rich</b>".utf8), forType: .html)
+        ordered.setString("plain", forType: .string)
+        board.clearContents(); precondition(board.writeObjects([ordered]))
+        let types = board.pasteboardItems!.first!.types
+        clipboard.paste("temporary", allowed: { true }, action: { _, done in done(true) }, failed: { fatalError("ordered snapshot") })
+        settle(0.2)
+        precondition(board.pasteboardItems!.first!.types == types)
+        print("PASS oversized copy preserved and type preference order restored")
         print("All clipboard tests passed; only private synthetic pasteboard used")
     }
 }

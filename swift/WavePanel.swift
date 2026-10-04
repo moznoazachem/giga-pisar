@@ -99,11 +99,11 @@ func dictationFocus() -> AXUIElement? {
     return axFocusedElement()
 }
 
-func matchesDictationFocus(_ original: AXUIElement?, current read: () -> AXUIElement? = dictationFocus) -> Bool {
+func matchesDictationFocus(_ original: AXUIElement?, strict: Bool = false, current read: () -> AXUIElement? = dictationFocus) -> Bool {
     // Some terminal/Chromium targets expose no stable AX field; PID remains
     // the fallback there. Never pretend it proves identity of a document.
-    guard let original else { return true }
-    guard let current = read() else { return false }
+    guard let original else { return !strict }
+    guard let current = read() else { return !strict } // deletion requires stronger evidence than paste
     return CFEqual(original, current)
 }
 
