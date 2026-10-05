@@ -293,13 +293,48 @@ private final class SlowProvider: NSObject, NSPasteboardItemDataProvider {
         precondition(!clipboard.isBusy && value() == large)
         print("PASS child pipe drains snapshots larger than pipe capacity")
         let huge = String(repeating: "h", count: 17 * 1024 * 1024)
-        seed(huge)
-        var oversizedRefused = false
-        clipboard.paste("must not overwrite oversized copy", allowed: { true },
-                        action: { _, _ in fatalError("oversized snapshot misclassified as hung") },
-                        failed: { oversizedRefused = true })
-        settle(0.2)
-        precondition(oversizedRefused && value() == huge)
+        for manyItems in [false, true] {
+            func seedOversized() {
+                if !manyItems { seed(huge); return }
+                let items = (0..<129).map { i -> NSPasteboardItem in
+                    let item = NSPasteboardItem()
+                    item.setString("item \(i)", forType: .string)
+                    return item
+                }
+                board.clearContents(); precondition(board.writeObjects(items))
+            }
+            seedOversized()
+            var fallback = false
+            clipboard.paste("oversized fallback", allowed: { true }, action: { ours, done in
+                precondition(ours() && value() == "oversized fallback")
+                fallback = true; done(true)
+            }, failed: { fatalError("snapshot limit must not prevent dictation") })
+            settle(0.8)
+            precondition(fallback && !clipboard.isBusy && value() == "oversized fallback")
+
+            for refusal in ["target", "stale", "copy"] {
+                seedOversized()
+                let mark = board.changeCount
+                var isStale = false, targetAllowed = true, refused = false
+                clipboard.paste("must not paste", stale: { isStale }, allowed: { targetAllowed },
+                                action: { _, _ in fatalError("unsafe fallback: \(refusal)") },
+                                failed: { refused = true })
+                // The child result returns asynchronously: change state during the read.
+                if refusal == "target" { targetAllowed = false }
+                if refusal == "stale" { isStale = true }
+                if refusal == "copy" { seed("new user copy during snapshot") }
+                settle(0.8)
+                precondition(refused && !clipboard.isBusy)
+                if refusal == "copy" { precondition(value() == "new user copy during snapshot") }
+                else { precondition(board.changeCount == mark) }
+            }
+            seed("healthy after refused snapshot")
+            clipboard.paste("normal again", allowed: { true }, action: { _, done in done(true) },
+                            failed: { fatalError("snapshot failure poisoned subsequent paste") })
+            settle(0.8)
+            precondition(!clipboard.isBusy && value() == "healthy after refused snapshot")
+        }
+        print("PASS byte/item limits fall back; changed target, stale request and new copy protected; recovery")
         let ordered = NSPasteboardItem()
         ordered.setData(Data("<b>rich</b>".utf8), forType: .html)
         ordered.setString("plain", forType: .string)
@@ -308,7 +343,7 @@ private final class SlowProvider: NSObject, NSPasteboardItemDataProvider {
         clipboard.paste("temporary", allowed: { true }, action: { _, done in done(true) }, failed: { fatalError("ordered snapshot") })
         settle(0.2)
         precondition(board.pasteboardItems!.first!.types == types)
-        print("PASS oversized copy preserved and type preference order restored")
+        print("PASS type preference order restored")
         print("All clipboard tests passed; only private synthetic pasteboard used")
     }
 }

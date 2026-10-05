@@ -249,7 +249,8 @@ final class DictationClipboard {
         }
         if hungMark == originalMark || keepOnClipboard { write(nil); return }
         snapshot { saved in
-            guard saved != nil || self.hungMark == originalMark else { failed(); return }
+            // Snapshot failure must not lose dictation. write still checks the
+            // target, request freshness and clipboard ownership before writing.
             write(saved)
         }
     }
