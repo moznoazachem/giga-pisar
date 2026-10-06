@@ -8,9 +8,9 @@ import AppKit
 
 /// Что изменилось в ЭТОЙ версии. Обновлять при каждом выпуске вместе с номером.
 let WHATS_NEW: [String] = uiIsRussian ? [
-    "Новый переключатель «Оставлять надиктованное в буфере» в настройках: для виртуальных машин и удалённых рабочих столов",
+    "Диктовка больше не зависает, если микрофон или буфер обмена долго не отвечают",
 ] : [
-    "New switch “Keep Dictation on the Clipboard” in Settings: for virtual machines and remote desktops",
+    "Dictation no longer hangs when the microphone or the clipboard is slow to respond",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.
