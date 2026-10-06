@@ -1,15 +1,15 @@
 {
-  "version": "3.9.3",
+  "version": "3.9.4",
   "downloads": [
-    "https://gitflic.ru/project/moznoazachem/giga/release/7c4a7de5-0b89-4c03-8298-f8e140d63fa2/f7019275-1549-4874-a308-652b1bf019cb/download",
-    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.3/GigaPisar-3.9.3.zip"
+    "https://gitflic.ru/project/moznoazachem/giga/release/50f8782f-5491-4c7b-b034-2cfcf82679a5/5115f8ae-6922-4351-a655-1764b14fec59/download",
+    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.4/GigaPisar-3.9.4.zip"
   ],
   "notes": {
     "ru": [
-      "Новый переключатель «Оставлять надиктованное в буфере» в настройках: для виртуальных машин и удалённых рабочих столов"
+      "Диктовка больше не зависает, если микрофон или буфер обмена долго не отвечают"
     ],
     "en": [
-      "New switch “Keep Dictation on the Clipboard” in Settings: for virtual machines and remote desktops"
+      "Dictation no longer hangs when the microphone or the clipboard is slow to respond"
     ]
   }
 }
