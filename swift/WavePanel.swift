@@ -10,6 +10,52 @@
 
 import AppKit
 
+// Bound the WHOLE synchronous query, not each of hundreds of menu attributes.
+// An unresponsive target falls back to the mouse/unknown focus, with a cooldown.
+enum AXBudget {
+    static var depth = 0
+    static var deadline: TimeInterval = 0
+    static var retryAfter: [pid_t: TimeInterval] = [:]
+    static var sawCannotComplete = false
+    static func enter() {
+        precondition(Thread.isMainThread)
+        if depth == 0 {
+            deadline = ProcessInfo.processInfo.systemUptime + 0.12
+            sawCannotComplete = false
+        }
+        depth += 1
+    }
+    static func leave() { depth -= 1 }
+    static func call(_ element: AXUIElement, _ body: () -> AXError) -> AXError {
+        let now = ProcessInfo.processInfo.systemUptime
+        var pid: pid_t = 0
+        _ = AXUIElementGetPid(element, &pid)
+        let remaining = deadline - now
+        guard now >= (retryAfter[pid] ?? 0), remaining >= 0.03 else {
+            sawCannotComplete = true; return .cannotComplete
+        }
+        AXUIElementSetMessagingTimeout(element, Float(remaining))
+        let result = body()
+        if result == .cannotComplete {
+            sawCannotComplete = true
+            if remaining >= 0.1, ProcessInfo.processInfo.systemUptime - now >= remaining * 0.8 {
+                retryAfter[pid] = ProcessInfo.processInfo.systemUptime + 2
+            }
+        }
+        return result
+    }
+}
+
+private func axCopy(_ element: AXUIElement, _ name: CFString,
+                    _ value: UnsafeMutablePointer<CFTypeRef?>) -> AXError {
+    AXBudget.call(element) { AXUIElementCopyAttributeValue(element, name, value) }
+}
+
+private func axParameterized(_ element: AXUIElement, _ name: CFString,
+                             _ parameter: CFTypeRef, _ value: UnsafeMutablePointer<CFTypeRef?>) -> AXError {
+    AXBudget.call(element) { AXUIElementCopyParameterizedAttributeValue(element, name, parameter, value) }
+}
+
 /// Где сейчас набирается текст. По убыванию точности:
 /// каретка активного поля → низ самого поля → низ активного окна →
 /// указатель мыши. На виртуальных машинах Accessibility часто молчит
@@ -24,6 +70,7 @@ func typingAnchor() -> NSPoint {
 /// Якорь без запасного варианта «мышь» — для слежения во время записи:
 /// за окном с кареткой плашка ходить должна, а за мышью — нет.
 func typingAnchorIfKnown(log: Bool = false) -> NSPoint? {
+    AXBudget.enter(); defer { AXBudget.leave() }
     let field = focusedFieldFrame()
     if let p = caretPoint() {
         // Каретка обязана лежать в своём поле. Точка вне поля — враньё
@@ -47,10 +94,24 @@ func typingAnchorIfKnown(log: Bool = false) -> NSPoint? {
 
 // MARK: - разговор с Accessibility
 
+func dictationFocus() -> AXUIElement? {
+    AXBudget.enter(); defer { AXBudget.leave() }
+    return axFocusedElement()
+}
+
+func matchesDictationFocus(_ original: AXUIElement?, strict: Bool = false, current read: () -> AXUIElement? = dictationFocus) -> Bool {
+    // Some terminal/Chromium targets expose no stable AX field; PID remains
+    // the fallback there. Never pretend it proves identity of a document.
+    guard let original else { return !strict }
+    guard let current = read() else { return !strict } // deletion requires stronger evidence than paste
+    return CFEqual(original, current)
+}
+
 /// Элемент, в котором сейчас клавиатурный фокус.
 private func axFocusedElement() -> AXUIElement? {
+    guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
     var ref: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(),
+    guard axCopy(AXUIElementCreateApplication(app.processIdentifier),
                                         "AXFocusedUIElement" as CFString,
                                         &ref) == .success,
           let f = ref, CFGetTypeID(f) == AXUIElementGetTypeID()
@@ -61,7 +122,7 @@ private func axFocusedElement() -> AXUIElement? {
 /// Положение курсора набора (выделения) в фокусном элементе.
 private func axSelectedRange(_ el: AXUIElement) -> CFRange? {
     var ref: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(el, "AXSelectedTextRange" as CFString,
+    guard axCopy(el, "AXSelectedTextRange" as CFString,
                                         &ref) == .success,
           let v = ref, CFGetTypeID(v) == AXValueGetTypeID()
     else { return nil }
@@ -88,7 +149,7 @@ private func axBounds(_ el: AXUIElement, _ range: CFRange) -> NSRect? {
     var r = range
     guard let rv = AXValueCreate(.cfRange, &r) else { return nil }
     var ref: CFTypeRef?
-    guard AXUIElementCopyParameterizedAttributeValue(
+    guard axParameterized(
         el, "AXBoundsForRange" as CFString, rv, &ref) == .success,
           let b = ref, CFGetTypeID(b) == AXValueGetTypeID()
     else { return nil }
@@ -112,11 +173,12 @@ private func axBounds(_ el: AXUIElement, _ range: CFRange) -> NSRect? {
 /// AXScrollArea без единого текстового атрибута. Тогда о выделении судим
 /// по пункту «Скопировать» в меню (frontMenuShortcutEnabled).
 func selectedTextViaAX() -> (text: String?, length: Int, silent: Bool) {
+    AXBudget.enter(); defer { AXBudget.leave() }
     guard let el = axFocusedElement(), let sel = axSelectedRange(el)
     else { return (nil, 0, true) }
     guard sel.length > 0 else { return (nil, 0, false) }
     var ref: CFTypeRef?
-    if AXUIElementCopyAttributeValue(el, "AXSelectedText" as CFString, &ref) == .success,
+    if axCopy(el, "AXSelectedText" as CFString, &ref) == .success,
        let s = ref as? String,
        !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         return (s, Int(sel.length), false)
@@ -130,10 +192,11 @@ func selectedTextViaAX() -> (text: String?, length: Int, silent: Bool) {
 /// приложение молчит в Accessibility. Обход меню занимает десятки
 /// миллисекунд, поэтому зовём его только для молчунов.
 func frontMenuShortcutEnabled(_ char: String) -> Bool {
+    AXBudget.enter(); defer { AXBudget.leave() }
     guard let app = NSWorkspace.shared.frontmostApplication else { return false }
     func attr(_ e: AXUIElement, _ n: String) -> CFTypeRef? {
         var v: CFTypeRef?
-        return AXUIElementCopyAttributeValue(e, n as CFString, &v) == .success ? v : nil
+        return axCopy(e, n as CFString, &v) == .success ? v : nil
     }
     let ax = AXUIElementCreateApplication(app.processIdentifier)
     guard let bar = attr(ax, "AXMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID()
@@ -164,22 +227,26 @@ private let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox",
                                       "AXSecureTextField", "AXSearchField"]
 
 func textFocus() -> TextFocus {
+    AXBudget.enter(); defer { AXBudget.leave() }
     guard let el = axFocusedElement() else {
         // Молчит. Первое молчание от этого приложения — повод разбудить
         // дерево и поверить на слово: скорее всего это Chromium, который
         // ещё не проснулся. Молчит и после побудки — значит фокуса
         // действительно нет.
-        return wakeAccessibility() ? .unknown : .notField
+        let incomplete = AXBudget.sawCannotComplete
+        let woke = wakeAccessibility()
+        return incomplete || AXBudget.sawCannotComplete || woke ? .unknown : .notField
     }
     // Pages и родня диапазона не отдают, но вставка у них работает:
     // спрашиваем про пункт «Вставить» в меню.
     guard axSelectedRange(el) != nil else {
-        return frontMenuShortcutEnabled("V") ? .field : .notField
+        let enabled = frontMenuShortcutEnabled("V")
+        return AXBudget.sawCannotComplete ? .unknown : (enabled ? .field : .notField)
     }
     var ref: CFTypeRef?
-    let role = (AXUIElementCopyAttributeValue(el, "AXRole" as CFString, &ref) == .success
+    let role = (axCopy(el, "AXRole" as CFString, &ref) == .success
                 ? ref as? String : nil) ?? ""
-    return textRoles.contains(role) ? .field : .notField
+    return AXBudget.sawCannotComplete ? .unknown : (textRoles.contains(role) ? .field : .notField)
 }
 
 /// Просьба к Chromium построить дерево доступности. Ключа два, оба
@@ -194,10 +261,13 @@ private var wokenApps = Set<String>()
 @discardableResult
 private func wakeAccessibility() -> Bool {
     guard let app = NSWorkspace.shared.frontmostApplication else { return false }
+    let id = String(app.processIdentifier)
+    guard !wokenApps.contains(id) else { return false }
     let el = AXUIElementCreateApplication(app.processIdentifier)
-    AXUIElementSetAttributeValue(el, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-    AXUIElementSetAttributeValue(el, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-    return wokenApps.insert(app.bundleIdentifier ?? "?").inserted
+    let first = AXBudget.call(el) { AXUIElementSetAttributeValue(el, "AXManualAccessibility" as CFString, kCFBooleanTrue) }
+    let second = AXBudget.call(el) { AXUIElementSetAttributeValue(el, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue) }
+    if first != .cannotComplete, second != .cannotComplete { wokenApps.insert(id) }
+    return true
 }
 
 /// Есть ли сейчас фокус в текстовом поле (даже если оно скрывает,
@@ -210,6 +280,7 @@ func hasTextFocus() -> Bool { textFocus() == .field }
 /// к курсору. Ответы шире 60 пунктов — враньё (терминалы любят отдать
 /// коробку во всю строку, и плашка вставала в её середину, а не у курсора).
 func caretPoint() -> NSPoint? {
+    AXBudget.enter(); defer { AXBudget.leave() }
     guard let el = axFocusedElement(), let sel = axSelectedRange(el) else { return nil }
     // сам пустой курсор — узкая коробочка
     if let r = axBounds(el, sel), r.width <= 60 {
@@ -230,22 +301,19 @@ func caretPoint() -> NSPoint? {
 /// Рамка активного окна — предпоследний якорь. Окно система знает
 /// всегда, даже когда про каретку и поле отмалчивается (виртуалки).
 func focusedWindowFrame() -> NSRect? {
-    var appRef: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(),
-                                        "AXFocusedApplication" as CFString,
-                                        &appRef) == .success,
-          let a = appRef, CFGetTypeID(a) == AXUIElementGetTypeID()
-    else { return nil }
+    AXBudget.enter(); defer { AXBudget.leave() }
+    guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+    let a = AXUIElementCreateApplication(app.processIdentifier)
     var winRef: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(a as! AXUIElement,
+    guard axCopy(a,
                                         "AXFocusedWindow" as CFString,
                                         &winRef) == .success,
           let w = winRef, CFGetTypeID(w) == AXUIElementGetTypeID()
     else { return nil }
     let win = w as! AXUIElement
     var posRef: CFTypeRef?, sizeRef: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(win, "AXPosition" as CFString, &posRef) == .success,
-          AXUIElementCopyAttributeValue(win, "AXSize" as CFString, &sizeRef) == .success,
+    guard axCopy(win, "AXPosition" as CFString, &posRef) == .success,
+          axCopy(win, "AXSize" as CFString, &sizeRef) == .success,
           let pv = posRef, CFGetTypeID(pv) == AXValueGetTypeID(),
           let sv = sizeRef, CFGetTypeID(sv) == AXValueGetTypeID()
     else { return nil }
@@ -261,9 +329,10 @@ func focusedWindowFrame() -> NSRect? {
 
 /// Рамка фокусного поля — запасной якорь, когда каретку скрывают.
 func focusedFieldFrame() -> NSRect? {
+    AXBudget.enter(); defer { AXBudget.leave() }
     guard let el = axFocusedElement() else { return nil }
     var ref: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(el, "AXFrame" as CFString, &ref) == .success,
+    guard axCopy(el, "AXFrame" as CFString, &ref) == .success,
           let v = ref, CFGetTypeID(v) == AXValueGetTypeID()
     else { return nil }
     var rect = CGRect.zero

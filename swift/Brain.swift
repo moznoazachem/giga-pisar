@@ -703,7 +703,7 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
         if cold, let m = chosenModel {
             let need = memoryNeeded(m), free = Memory.available
             if free < need {
-                DispatchQueue.main.async {
+                onMainInModal {
                     let a = NSAlert()
                     a.messageText = L("Памяти впритык", "Memory is tight")
                     a.informativeText = L("Свободно \(Memory.gb(free)) ГБ, а \(m.name) нужно около \(Memory.gb(need)) ГБ. Нейронка всё равно запустится, но macOS будет выгружать другие программы на диск, и ждать можно несколько минут. Закрой тяжёлые программы и попробуй снова, или запускай так.",
