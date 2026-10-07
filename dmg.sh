@@ -40,6 +40,11 @@ MNT=$(hdiutil attach -readwrite -noverify -noautoopen "$RW" | grep -oE '/Volumes
 echo "   смонтирован: $MNT"
 
 echo "── раскладка окна в Finder"
+# Finder узнаёт о свежем томе не сразу: ждём, пока он появится в его списке дисков.
+for _ in {1..20}; do
+  osascript -e "tell application \"Finder\" to exists disk \"$VOL\"" 2>/dev/null | grep -q true && break
+  sleep 0.5
+done
 osascript - "$VOL" <<'APPLESCRIPT'
 on run argv
   set vol to item 1 of argv
