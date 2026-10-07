@@ -236,8 +236,8 @@ enum BrainAdvice {
         case "gemini": return L("Модели Google, есть бесплатный лимит. Из России не работает без VPN.",
                                 "Google models with a free tier.")
         case "anthropic": return L("Модели Claude, платно. Из России не работает без VPN.", "Claude models, paid.")
-        default: return L("Своя нейросеть в LM Studio, Ollama или llama.cpp, у себя или в своей сети. Бесплатно.",
-                          "Your own model in LM Studio, Ollama or llama.cpp, at home or on your network. Free.")
+        default: return L("Своя нейросеть или любой совместимый сервис: адрес и, если нужно, ключ.",
+                          "Your own model or any compatible service: the address and, if needed, a key.")
         }
     }
 }

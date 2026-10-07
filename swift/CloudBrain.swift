@@ -80,7 +80,9 @@ final class CloudBrainState: ObservableObject {
             status = L("Похоже на ключ \(guess.name), выбрал его.", "Looks like a \(guess.name) key, selected it.")
         }
         pause?.invalidate()
-        guard !key.trimmingCharacters(in: .whitespaces).isEmpty else {
+        // Своему серверу без адреса ключ ни к чему: список спросим, когда адрес появится.
+        guard !key.trimmingCharacters(in: .whitespaces).isEmpty,
+              !(provider.isCustom && address.trimmingCharacters(in: .whitespaces).isEmpty) else {
             serial += 1
             busy = false
             return
@@ -198,8 +200,9 @@ struct CloudBrainView: View {
             }
 
             // Ключ — отдельной секцией: это длинная строка, которой нужна
-            // вся ширина, и рамка поля тут только мешает.
-            if !state.provider.isCustom {
+            // вся ширина, и рамка поля тут только мешает. У своего сервера
+            // тоже: LM Studio ключ не нужен, а YandexGPT и прочим нужен.
+            Group {
                 // Без заголовка секции: строка сама себя называет.
                 VStack(alignment: .leading, spacing: 7) {
                     SettingsCard {
@@ -209,14 +212,20 @@ struct CloudBrainView: View {
                                         sideLength: 22, reservesHeight: true)
                                 Text(L("Ключ API", "API Key"))
                                 Spacer(minLength: 12)
-                                Button(L("Где взять ключ \(state.provider.name) →",
-                                         "Get a \(state.provider.name) key →")) {
-                                    if let u = URL(string: state.provider.keysURL), !state.provider.keysURL.isEmpty {
-                                        NSWorkspace.shared.open(u)
+                                if state.provider.isCustom {
+                                    Text(L("если сервер его просит", "if the server asks for one"))
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Button(L("Где взять ключ \(state.provider.name) →",
+                                             "Get a \(state.provider.name) key →")) {
+                                        if let u = URL(string: state.provider.keysURL), !state.provider.keysURL.isEmpty {
+                                            NSWorkspace.shared.open(u)
+                                        }
                                     }
+                                    .buttonStyle(.link)
+                                    .font(.system(size: 11))
                                 }
-                                .buttonStyle(.link)
-                                .font(.system(size: 11))
                             }
                             HStack(spacing: 8) {
                                 SecureField(L("вставьте ключ сюда", "paste the key here"), text: $state.key)

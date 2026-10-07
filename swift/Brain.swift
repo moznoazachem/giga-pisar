@@ -871,7 +871,8 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
         var payload: [String: Any] = ["model": BrainServer.model, "messages": messages]
         if !lean {
             payload["temperature"] = 0.3
-            payload["reasoning_effort"] = "none"
+            // Gemini 3 cannot switch thinking off and answers "none" with 400; it thinks little by default.
+            if url.host?.hasSuffix("googleapis.com") != true { payload["reasoning_effort"] = "none" }
         }
         var req = BrainServer.request(url, key: BrainServer.apiKey)
         req.httpMethod = "POST"
@@ -931,7 +932,7 @@ enum BrainProviders {
     static let groq = BrainProvider(id: "groq", name: "Groq", baseURL: "https://api.groq.com/openai/v1",
                                     preferredModels: ["llama-3.3-70b-versatile"], keysURL: "https://console.groq.com/keys")
     static let gemini = BrainProvider(id: "gemini", name: "Google Gemini", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
-                                      preferredModels: ["gemini-2.5-flash", "gemini-2.0-flash"], keysURL: "https://aistudio.google.com/apikey")
+                                      preferredModels: ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"], keysURL: "https://aistudio.google.com/apikey")
     static let anthropic = BrainProvider(id: "anthropic", name: "Anthropic (Claude)", baseURL: "https://api.anthropic.com/v1",
                                          preferredModels: ["claude-haiku-4-5"], keysURL: "https://console.anthropic.com/settings/keys")
     static let custom = BrainProvider(id: "custom", name: "", baseURL: "", preferredModels: [], keysURL: "")
@@ -947,7 +948,7 @@ enum BrainProviders {
         if k.hasPrefix("sk-or-") { return openrouter }
         if k.hasPrefix("sk-ant-") { return anthropic }
         if k.hasPrefix("gsk_") { return groq }
-        if k.hasPrefix("AIza") { return gemini }
+        if k.hasPrefix("AIza") || k.hasPrefix("AQ.") { return gemini }
         if k.range(of: "^sk-[0-9a-f]{32}$", options: .regularExpression) != nil { return deepseek }
         // Plain "sk-" is used by several services; only OpenAI's long keys are a safe guess.
         if k.hasPrefix("sk-proj-") || k.hasPrefix("sk-svcacct-") || (k.hasPrefix("sk-") && k.count >= 45) { return openai }
