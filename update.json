@@ -1,15 +1,17 @@
 {
-  "version": "3.9.4",
+  "version": "3.9.5",
   "downloads": [
-    "https://gitflic.ru/project/moznoazachem/giga/release/50f8782f-5491-4c7b-b034-2cfcf82679a5/5115f8ae-6922-4351-a655-1764b14fec59/download",
-    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.4/GigaPisar-3.9.4.zip"
+    "https://gitflic.ru/project/moznoazachem/giga/release/1e227bc9-160c-4b2a-be4e-a34da0add058/81ac2272-c559-4aea-9791-a0d7fada58d6/download",
+    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.5/GigaPisar-3.9.5.zip"
   ],
   "notes": {
     "ru": [
-      "Диктовка больше не зависает, если микрофон или буфер обмена долго не отвечают"
+      "У «Своего сервера» в Мозге снова есть поле ключа: можно подключить YandexGPT и другие сервисы",
+      "Gemini снова работает: новые модели по умолчанию, новые ключи узнаются сами"
     ],
     "en": [
-      "Dictation no longer hangs when the microphone or the clipboard is slow to respond"
+      "The Own Server option in the Brain has a key field again: YandexGPT and other services work",
+      "Gemini works again: current models by default, new keys are recognized"
     ]
   }
 }
