@@ -8,9 +8,11 @@ import AppKit
 
 /// Что изменилось в ЭТОЙ версии. Обновлять при каждом выпуске вместе с номером.
 let WHATS_NEW: [String] = uiIsRussian ? [
-    "Диктовка больше не зависает, если микрофон или буфер обмена долго не отвечают",
+    "У «Своего сервера» в Мозге снова есть поле ключа: можно подключить YandexGPT и другие сервисы",
+    "Gemini снова работает: новые модели по умолчанию, новые ключи узнаются сами",
 ] : [
-    "Dictation no longer hangs when the microphone or the clipboard is slow to respond",
+    "The Own Server option in the Brain has a key field again: YandexGPT and other services work",
+    "Gemini works again: current models by default, new keys are recognized",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.
