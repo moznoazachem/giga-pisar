@@ -1,17 +1,17 @@
 {
-  "version": "3.9.5",
+  "version": "3.9.6",
   "downloads": [
-    "https://gitflic.ru/project/moznoazachem/giga/release/1e227bc9-160c-4b2a-be4e-a34da0add058/81ac2272-c559-4aea-9791-a0d7fada58d6/download",
-    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.5/GigaPisar-3.9.5.zip"
+    "https://gitflic.ru/project/moznoazachem/giga/release/477b74b8-4adc-4bdf-a964-95564a5f2b02/8722f5fa-fe40-43cc-986d-c4a0c362c74f/download",
+    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.6/GigaPisar-3.9.6.zip"
   ],
   "notes": {
     "ru": [
-      "У «Своего сервера» в Мозге снова есть поле ключа: можно подключить YandexGPT и другие сервисы",
-      "Gemini снова работает: новые модели по умолчанию, новые ключи узнаются сами"
+      "Новое окно первого запуска: семь коротких шагов, от модели и доступов до проверки диктовки",
+      "Если загрузка модели сорвалась, можно попробовать снова, не перезапуская Писаря"
     ],
     "en": [
-      "The Own Server option in the Brain has a key field again: YandexGPT and other services work",
-      "Gemini works again: current models by default, new keys are recognized"
+      "A new first-run window: seven short steps, from the model and permissions to a dictation check",
+      "If the model download fails, you can try again without restarting Pisar"
     ]
   }
 }
