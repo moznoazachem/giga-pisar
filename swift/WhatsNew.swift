@@ -8,11 +8,13 @@ import AppKit
 
 /// Что изменилось в ЭТОЙ версии. Обновлять при каждом выпуске вместе с номером.
 let WHATS_NEW: [String] = uiIsRussian ? [
-    "У «Своего сервера» в Мозге снова есть поле ключа: можно подключить YandexGPT и другие сервисы",
-    "Gemini снова работает: новые модели по умолчанию, новые ключи узнаются сами",
+    "Новое окно первого запуска: семь коротких шагов, от модели и доступов до проверки диктовки",
+    "Если загрузка модели сорвалась, можно попробовать снова, не перезапуская Писаря",
+    "В меню снова видны значки",
 ] : [
-    "The Own Server option in the Brain has a key field again: YandexGPT and other services work",
-    "Gemini works again: current models by default, new keys are recognized",
+    "A new first-run window: seven short steps, from the model and permissions to a dictation check",
+    "If the model download fails, you can try again without restarting Pisar",
+    "Icons are back in the menu",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.
