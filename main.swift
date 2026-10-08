@@ -6,6 +6,7 @@
 import AVFoundation
 import AppKit
 import ServiceManagement
+import SwiftUI
 
 // Язык интерфейса берём у системы: русская система — русские надписи,
 // любая другая — английские. Имя приложения (Giga Pisar) не переводится.
@@ -125,7 +126,12 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var animTimer: Timer?
 
     /// Окно с разрешениями (первый запуск и пункт меню).
-    let onboarding = Onboarding()
+    /// Окно знакомства: показывается один раз, при первом запуске.
+    let setup = SetupWindow()
+    /// Пока оно на экране, про отсутствие модели не ворчим и отдельное
+    /// окно с полоской не поднимаем — всё видно прямо в нём.
+    var setupRunning = false
+    private var setupPoll: Timer?
 
     /// Модель. Грузится один раз в фоне; recognizer трогаем только из recognizerQueue.
     var recognizer: Recognizer?
@@ -272,9 +278,18 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         buildMenu()
         loadModel()
         startKeyMonitors()
-        if !Onboarding.allGranted || Onboarding.demo != nil {
+        if CommandLine.arguments.contains("--setup") || needsSetup() {
+            setupRunning = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.startSetup()
+            }
+        } else if !missingAccess.isEmpty {
+            // Доступ отобрали уже после знакомства — показываем то же
+            // окно, но только шаг с тем доступом, которого не хватает.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                self?.onboarding.show()
+                guard let self else { return }
+                // С крестиком: человек волен отложить и выдать доступ позже.
+                self.startSetup(steps: self.missingAccess, closable: true)
             }
         }
         // Переехали в Программы ради обновления — не ждём 15 секунд, обновляемся
@@ -368,6 +383,11 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let icon, let img = menuIcon(icon) {
             img.isTemplate = true
             it.image = img
+            // С macOS 27 AppKit сам решает, показывать ли значок пункта,
+            // и обычно прячет. Говорим прямо: показывать.
+            if #available(macOS 27.0, *) {
+                it.preferredImageVisibility = .visible
+            }
         }
         // все пункты через attributedTitle: так шрифт мельче системного
         it.attributedTitle = menuAttrTitle(title, sub: sub)
@@ -542,7 +562,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settings.show(tab: .brain)
     }
 
-    @objc func showOnboarding() { onboarding.show() }
+    /// «Доступы» в настройках: только два шага про разрешения — всё
+    /// остальное знакомство человек уже прошёл.
+    @objc func showPermissions() { startSetup(steps: [.microphone, .accessibility], closable: true) }
 
     /// «Рассказать другу»: родная шторка «Поделиться» с готовым текстом и
     /// ссылкой на сайт. Сайт не меняется от версии к версии, там оба зеркала.
@@ -793,6 +815,159 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         settingsChanged()
     }
 
+    // MARK: знакомство
+
+    /// Знакомиться надо только новичкам. Тем, у кого модель на месте и
+    /// оба доступа выданы, окно уже ни к чему — отмечаем, что прошли.
+    func needsSetup() -> Bool {
+        if UserDefaults.standard.bool(forKey: "setupDone") { return false }
+        // В режиме снимков доступы подделаны — настоящую отметку по ним
+        // ставить нельзя.
+        if Access.demo != nil { return true }
+        if findModelDir() != nil, Access.allGranted {
+            UserDefaults.standard.set(true, forKey: "setupDone")
+            return false
+        }
+        return true
+    }
+
+    /// Каких доступов не хватает прямо сейчас.
+    var missingAccess: [SetupStep] {
+        var steps: [SetupStep] = []
+        if !Access.micGranted { steps.append(.microphone) }
+        if !Access.axGranted { steps.append(.accessibility) }
+        return steps
+    }
+
+    /// Окно знакомства сейчас показывает ход загрузки. На шагах про
+    /// доступы его показывать негде, поэтому туда отчёт не отдаём —
+    /// иначе он пропадает в никуда.
+    var setupShowsProgress: Bool {
+        setupRunning && setup.state.steps.contains(.welcome)
+    }
+
+    func startSetup(steps: [SetupStep] = SetupStep.allCases, closable: Bool = false) {
+        let s = setup.state
+        s.steps = steps
+        s.step = steps.first ?? .welcome
+        s.autoSkipped = []
+        s.autoAdvancing = false
+        s.note = ""
+        s.failed = false
+        s.tryText = ""
+        s.progress = 0
+        s.done = 0
+        s.total = 0
+        s.ready = findModelDir() != nil
+        s.micGranted = Access.micGranted
+        s.micDenied = micRefused
+        s.axGranted = Access.axGranted
+        s.hotkeyId = currentHotkey().id
+        s.waveChoice = waveChoice
+        s.askMic = { [weak self] in self?.setupAskMic() }
+        s.retry = { [weak self] in
+            guard let self, self.modelDL == nil else { return }
+            self.setup.state.failed = false
+            self.setup.state.note = ""
+            self.downloadSpeechModel()
+        }
+        s.restart = { [weak self] in self?.relaunch() }
+        s.askAX = { [weak self] in self?.setupAskAX() }
+        s.pickHotkey = { [weak self] id in self?.selectHotkey(id) }
+        s.pickWave = { [weak self] id in self?.selectWave(id) }
+        s.finish = { [weak self] in self?.finishSetup() }
+        s.openBrain = { [weak self] in
+            self?.finishSetup()
+            self?.openBrainSettings()
+        }
+        setupRunning = true
+        setup.show(closable: closable)
+        // Модель качаем только в полном знакомстве: когда пришли из-за
+        // доступа, она давно на месте.
+        if steps.contains(.welcome), !s.ready, modelDL == nil { downloadSpeechModel() }
+        // Универсальный доступ система выдаёт молча: узнать о нём можно
+        // только спрашивая. Микрофон заодно — его могли выдать в обход.
+        setupPoll?.invalidate()
+        setupPoll = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+            guard let self, self.setupRunning else { return }
+            let s = self.setup.state
+            if s.micGranted != Access.micGranted { s.micGranted = Access.micGranted }
+            if s.micDenied != self.micRefused { s.micDenied = self.micRefused }
+            if s.axGranted != Access.axGranted { s.axGranted = Access.axGranted }
+        }
+    }
+
+    /// В микрофоне отказали — или его запретил кто-то за человека
+    /// (родительский присмотр, политика).
+    private var micRefused: Bool {
+        let st = AVCaptureDevice.authorizationStatus(for: .audio)
+        return st == .denied || st == .restricted
+    }
+
+    /// Выйти и подняться заново: тумблер микрофона начинает действовать
+    /// только для заново запущенного приложения.
+    func relaunch() {
+        let me = Bundle.main.bundlePath
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c",
+            "while /bin/kill -0 \"$1\" 2>/dev/null; do /bin/sleep 0.3; done; /usr/bin/open \"$2\"",
+            "sh", String(ProcessInfo.processInfo.processIdentifier), me]
+        try? p.run()
+        NSApp.terminate(nil)
+    }
+
+    private func setupAskMic() {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] ok in
+                DispatchQueue.main.async { self?.setup.state.micGranted = ok }
+            }
+        case .authorized:
+            setup.state.micGranted = true
+        default:
+            // Отказали раньше — своим окном это уже не исправить.
+            openPrivacyPane("Privacy_Microphone")
+        }
+    }
+
+    /// Первый раз — системным окном: оно же заносит Писаря в список.
+    /// Дальше — прямо в раздел настроек, тумблер человек включает сам.
+    /// Раз за запуск: системное окно заодно заносит Писаря в список, и
+    /// после подмены приложения (обновление, перезапуск) туда надо
+    /// попасть снова — поэтому не запоминаем навсегда.
+    private var axAskedInSetup = false
+
+    private func setupAskAX() {
+        guard !AXIsProcessTrusted() else {
+            setup.state.axGranted = true
+            return
+        }
+        if axAskedInSetup {
+            openPrivacyPane("Privacy_Accessibility")
+        } else {
+            axAskedInSetup = true
+            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        }
+    }
+
+    private func openPrivacyPane(_ anchor: String) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func finishSetup() {
+        if setup.state.steps.contains(.brain) {
+            UserDefaults.standard.set(true, forKey: "setupDone")
+        }
+        setupPoll?.invalidate()
+        setupPoll = nil
+        setupRunning = false
+        setup.hide()
+        settingsChanged()
+    }
+
     // MARK: сервер
 
     func loadModel() {
@@ -815,6 +990,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Один раз: дальше модель живёт в ~/.giga/model и переживает
     /// любые обновления (swap.sh её ещё и подстраховывает).
     func complainNoModel() {
+        // Во время знакомства про это написано прямо в окне.
+        guard !setupRunning else { return }
         let a = NSAlert()
         a.messageText = L("Остался один шаг — модель распознавания",
                           "One last piece — the speech model")
@@ -838,16 +1015,26 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.modelDL?.cancel()
             self?.modelDL = nil
         }
-        modelWindow.show(title: L("Модель распознавания", "Speech model"))
-        modelWindow.downloading(percent: 0)
+        if !setupShowsProgress {
+            modelWindow.show(title: L("Модель распознавания", "Speech model"))
+            modelWindow.downloading(percent: 0)
+        }
         modelDL = Downloader(onPercent: { [weak self] p in
-            self?.modelWindow.downloading(percent: p)
+            guard let self else { return }
+            if self.setupShowsProgress { return }   // в окне знакомства свои мегабайты
+            self.modelWindow.downloading(percent: p)
         }, onDone: { [weak self] file, error in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.modelDL = nil
                 guard let file else {
                     self.modelWindow.hide()
+                    if self.setupShowsProgress {
+                        self.setup.state.failed = true
+                        self.setup.state.note = L("Не скачалась (\(error ?? "сеть"))",
+                                                  "Download failed (\(error ?? "network"))")
+                        return
+                    }
                     Toast.shared.show(L("Модель не скачалась (\(error ?? "сеть")) — попробуй позже, окно появится снова при запуске",
                                         "Model download failed (\(error ?? "network")) — try again later, the prompt returns on launch"))
                     return
@@ -855,12 +1042,26 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.unpackSpeechModel(file)
             }
         })
+        modelDL?.onBytes = { [weak self] done, total in
+            guard let s = self?.setup.state, self?.setupShowsProgress == true else { return }
+            // Раз на мегабайт: в строке всё равно целые мегабайты, а
+            // каждая запись перерисовывает окно.
+            guard done >= s.done + 1_048_576 || done == total else { return }
+            s.note = ""
+            s.done = done
+            s.total = total
+            s.progress = total > 0 ? Double(done) / Double(total) : 0
+        }
         modelDL?.download(url)
     }
 
     private func unpackSpeechModel(_ file: URL) {
         modelWindow.onCancel = nil
-        modelWindow.busy(L("Распаковываю…", "Unpacking…"))
+        if setupShowsProgress {
+            setup.state.note = L("Распаковываю…", "Unpacking…")
+        } else {
+            modelWindow.busy(L("Распаковываю…", "Unpacking…"))
+        }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let dest = NSHomeDirectory() + "/.giga/model"
             // The same tarball as on GitHub (its own digest says so); anything else is not unpacked.
@@ -889,8 +1090,16 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.modelWindow.hide()
                 if ok {
                     self.loadModel()
-                    Toast.shared.show(L("Модель на месте — зажимай \(currentHotkey().title) и диктуй!",
-                                        "Model is in — hold \(currentHotkey().title) and dictate!"))
+                    if self.setupShowsProgress {
+                        self.setup.state.note = ""
+                        self.setup.state.ready = true
+                    } else {
+                        Toast.shared.show(L("Модель на месте — зажимай \(currentHotkey().title) и диктуй!",
+                                            "Model is in — hold \(currentHotkey().title) and dictate!"))
+                    }
+                } else if self.setupShowsProgress {
+                    self.setup.state.failed = true
+                    self.setup.state.note = L("Архив не распаковался", "Could not unpack")
                 } else {
                     Toast.shared.show(L("Архив модели не распаковался — попробуй ещё раз",
                                         "Couldn't unpack the model — try again"))
@@ -1122,36 +1331,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// и поля ввода остаются без ⌘V, ⌘C и ⌘Z: печатать можно, вставить
     /// нельзя. Меню собираем сразу, а показываем его вместе с окном
     /// настроек, переключая политику (см. SettingsWindow).
-    func installEditMenu() {
-        let app = NSMenu()
-        let appItem = NSMenuItem()
-        let appMenu = NSMenu()
-        appMenu.addItem(NSMenuItem(title: L("Скрыть Гига Писарь", "Hide Giga Pisar"),
-                                   action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"))
-        appMenu.addItem(.separator())
-        appMenu.addItem(NSMenuItem(title: L("Выйти", "Quit"),
-                                   action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        appItem.submenu = appMenu
-
-        let edit = NSMenu(title: L("Правка", "Edit"))
-        let items: [(String, String, Selector)] = [
-            (L("Отменить", "Undo"), "z", Selector(("undo:"))),
-            (L("Повторить", "Redo"), "Z", Selector(("redo:"))),
-            (L("Вырезать", "Cut"), "x", #selector(NSText.cut(_:))),
-            (L("Скопировать", "Copy"), "c", #selector(NSText.copy(_:))),
-            (L("Вставить", "Paste"), "v", #selector(NSText.paste(_:))),
-            (L("Выделить всё", "Select All"), "a", #selector(NSText.selectAll(_:))),
-        ]
-        for (title, key, action) in items {
-            edit.addItem(NSMenuItem(title: title, action: action, keyEquivalent: key))
-        }
-        let editItem = NSMenuItem()
-        editItem.submenu = edit
-
-        app.addItem(appItem)
-        app.addItem(editItem)
-        NSApp.mainMenu = app
-    }
+    func installEditMenu() { installMainMenu() }
 
     func startKeyMonitors() {
         NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] e in
@@ -1804,6 +1984,83 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         return inField
     }
+}
+
+// Предпросмотр окна первого запуска: `Giga --setup-preview`. Полоска
+// идёт понарошку, ничего не качается и не меняется — окно можно смотреть,
+// пока установленный Писарь работает рядом.
+if CommandLine.arguments.contains("--setup-preview") {
+    final class SetupPreview: NSObject, NSApplicationDelegate {
+        let setup = SetupWindow()
+        func applicationDidFinishLaunching(_ n: Notification) {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            setup.show(closable: true)
+            setup.state.askMic = { [self] in
+                SwiftUI.withAnimation(.easeInOut(duration: 0.18)) {
+                    setup.state.micGranted = true
+                }
+            }
+            setup.state.askAX = { [self] in
+                // В настоящем приложении тут откроются системные настройки,
+                // а доступ появится через несколько секунд ожидания.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+                    SwiftUI.withAnimation(.easeInOut(duration: 0.18)) {
+                        setup.state.axGranted = true
+                    }
+                }
+            }
+            setup.state.finish = { [self] in restart() }
+            setup.state.openBrain = { NSLog("Гига: тут откроются настройки на «Мозге»") }
+            setup.state.onReset = { [self] in restart() }
+            restart()
+        }
+
+        private var timer: Timer?
+
+        /// Прогнать всё с самого начала: шаг первый, загрузка с нуля,
+        /// доступы сброшены.
+        private func restart() {
+            timer?.invalidate()
+            let s = setup.state
+            SwiftUI.withAnimation(.easeInOut(duration: 0.3)) {
+                s.step = .welcome
+                s.ready = false
+                s.micGranted = false
+                s.axGranted = false
+            }
+            s.autoSkipped = []
+        s.autoAdvancing = false
+        s.note = ""
+        s.failed = false
+        s.tryText = ""
+        s.progress = 0
+        s.done = 0
+        s.total = 0
+            s.autoAdvancing = false
+            s.progress = 0
+            s.done = 0
+            s.note = ""
+            let total: Int64 = 204 * 1_048_576
+            s.total = total
+            timer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { t in
+                s.progress = min(1, s.progress + 0.004)
+                s.done = Int64(Double(total) * s.progress)
+                if s.progress >= 1 {
+                    s.note = L("Распаковываю…", "Unpacking…")
+                    t.invalidate()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        SwiftUI.withAnimation(.easeInOut(duration: 0.3)) { s.ready = true }
+                    }
+                }
+            }
+        }
+    }
+    let app = NSApplication.shared
+    let delegate = SetupPreview()
+    app.delegate = delegate
+    app.run()
+    exit(0)
 }
 
 // Diagnostics: `Giga --brain-test in.txt` runs the saved Brain settings on the text
