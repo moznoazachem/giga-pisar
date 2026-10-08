@@ -45,10 +45,20 @@ enum KeyboardModel {
 struct KeyboardView: NSViewRepresentable {
     /// Какую клавишу нажимать: id из HOTKEYS.
     let hotkeyId: String
+    /// Докуда камера отъезжает к краю корпуса. Больше значение — больше
+    /// просвет между клавиатурой и краем кадра. 0.0635 оставляет 16 pt
+    /// при ширине 459 (настройки), 0.069 — 32 pt при 648 (первый запуск).
+    var edge: CGFloat = 0.0635
+    /// Насколько отодвинуть камеру. Единица — как в настройках; больше —
+    /// клавиатура в кадре мельче и занимает меньше высоты.
+    var pullback: CGFloat = 1
+    /// Чем закрасить холст сцены. Прозрачной SceneKit её не отдаёт,
+    /// поэтому красим в цвет того, на чём она лежит.
+    var backdrop: NSColor? = nil
 
     func makeNSView(context: Context) -> SCNView {
         let view = SCNView()
-        view.backgroundColor = KeyboardModel.backdrop(for: view.effectiveAppearance)
+        view.backgroundColor = backdrop ?? KeyboardModel.backdrop(for: view.effectiveAppearance)
         view.antialiasingMode = .multisampling4X
         // Без этого клавиша не нажимается: SCNView не крутит анимации,
         // пока его не попросят.
@@ -56,13 +66,15 @@ struct KeyboardView: NSViewRepresentable {
         view.allowsCameraControl = false
         view.scene = context.coordinator.makeScene()
         context.coordinator.view = view
+        context.coordinator.setFrame(edge: edge, pullback: pullback)
         context.coordinator.start(hotkeyId)
         return view
     }
 
     func updateNSView(_ view: SCNView, context: Context) {
         // Тема могла смениться, пока окно открыто.
-        view.backgroundColor = KeyboardModel.backdrop(for: view.effectiveAppearance)
+        view.backgroundColor = backdrop ?? KeyboardModel.backdrop(for: view.effectiveAppearance)
+        context.coordinator.setFrame(edge: edge, pullback: pullback)
         context.coordinator.start(hotkeyId)
     }
 
@@ -74,6 +86,21 @@ struct KeyboardView: NSViewRepresentable {
         private var cameraNode: SCNNode?
         private var timer: Timer?
         private var chosen: String?
+        /// Докуда камера отъезжает к краю корпуса и насколько она отодвинута.
+        private var edge: CGFloat = 0.0635
+        private var pullback: CGFloat = 1
+
+        /// Кадр задаётся снаружи и может смениться на лету: тогда камеру
+        /// надо навести заново, сама она об этом не узнает.
+        func setFrame(edge: CGFloat, pullback: CGFloat) {
+            guard edge != self.edge || pullback != self.pullback else { return }
+            self.edge = edge
+            self.pullback = pullback
+            // Навести заново: камера сама о новом кадре не узнает.
+            let id = chosen
+            chosen = nil
+            if let id { start(id) }
+        }
         private var tinted: SCNNode?
         /// Нажатая сейчас клавиша: если выбрать другую, пока эта внизу,
         /// её надо отпустить сразу, а не ждать, пока доиграет своё.
@@ -134,8 +161,9 @@ struct KeyboardView: NSViewRepresentable {
             // Клавиша всегда с краю: если она справа — показываем правый
             // край корпуса, если слева — левый, и в обоих случаях между
             // ним и краем карточки остаются те же 16 pt, что у строк.
-            let edge: CGFloat = key.worldPosition.x > 0 ? 0.0635 : -0.0635
-            cameraNode.position = SCNVector3(edge, 0.062, 0.235)
+            let side: CGFloat = key.worldPosition.x > 0 ? edge : -edge
+            // Отодвигаем по оси взгляда: наклон тот же, клавиатура мельче.
+            cameraNode.position = SCNVector3(side, 0.062 * pullback, 0.235 * pullback)
             SCNTransaction.commit()
         }
 

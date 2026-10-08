@@ -22,6 +22,9 @@ import Security
 final class Downloader: NSObject, URLSessionDownloadDelegate {
     private let onPercent: (Int) -> Void
     private let onDone: (URL?, String?) -> Void // (файл, причина беды)
+    /// Сколько байт уже пришло и сколько всего. Проценты для строки меню
+    /// годятся, а окну знакомства нужны мегабайты.
+    var onBytes: ((Int64, Int64) -> Void)?
     private var session: URLSession!
     private var lastPercent = -1
 
@@ -46,6 +49,9 @@ final class Downloader: NSObject, URLSessionDownloadDelegate {
                     didWriteData: Int64, totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
         guard totalBytesExpectedToWrite > 0 else { return }
+        if let onBytes {
+            DispatchQueue.main.async { onBytes(totalBytesWritten, totalBytesExpectedToWrite) }
+        }
         let p = Int(100 * totalBytesWritten / totalBytesExpectedToWrite)
         guard p != lastPercent else { return } // не чаще раза на процент
         lastPercent = p

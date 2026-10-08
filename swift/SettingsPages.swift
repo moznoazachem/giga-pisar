@@ -42,7 +42,7 @@ struct GeneralPage: View {
                 SettingsRow(icon: "lock.shield.fill", color: sys(.systemTeal),
                             title: L("Доступы", "Permissions"),
                             subtitle: L("Микрофон и вставка текста", "Microphone and text insertion")) {
-                    Button(L("Открыть…", "Open…")) { app.showOnboarding() }
+                    Button(L("Открыть…", "Open…")) { app.showPermissions() }
                 }
             }
         }

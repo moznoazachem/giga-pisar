@@ -43,8 +43,8 @@ rm -rf build
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 
 SOURCES=(main.swift swift/Ort.swift swift/Features.swift swift/Tokenizer.swift
-         swift/Recognizer.swift swift/Audio.swift swift/Mic.swift swift/Sound.swift swift/WavePanel.swift swift/Chips.swift swift/Brain.swift swift/SettingsWindow.swift swift/RowIcon.swift swift/SettingsView.swift swift/SettingsPages.swift swift/CloudBrain.swift swift/KeyboardScene.swift swift/Updates.swift
-         swift/Onboarding.swift swift/SelfUpdate.swift swift/WhatsNew.swift swift/UpdateWindow.swift swift/Memory.swift swift/FileHash.swift swift/Clipboard.swift swift/RecordingStart.swift)
+         swift/Recognizer.swift swift/Audio.swift swift/Mic.swift swift/Sound.swift swift/WavePanel.swift swift/Chips.swift swift/Brain.swift swift/SettingsWindow.swift swift/RowIcon.swift swift/SettingsView.swift swift/SettingsPages.swift swift/SetupWindow.swift swift/CloudBrain.swift swift/KeyboardScene.swift swift/Updates.swift
+         swift/SelfUpdate.swift swift/WhatsNew.swift swift/UpdateWindow.swift swift/Memory.swift swift/FileHash.swift swift/Clipboard.swift swift/RecordingStart.swift)
 
 # универсальный бинарник: Apple Silicon + Intel в одном файле
 echo "── сборка"
