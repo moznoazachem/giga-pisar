@@ -385,9 +385,12 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             it.image = img
             // С macOS 27 AppKit сам решает, показывать ли значок пункта,
             // и обычно прячет. Говорим прямо: показывать.
+            // Есть только в SDK macOS 27 (Xcode 27); старый SDK этого свойства не знает.
+            #if compiler(>=6.4)
             if #available(macOS 27.0, *) {
                 it.preferredImageVisibility = .visible
             }
+            #endif
         }
         // все пункты через attributedTitle: так шрифт мельче системного
         it.attributedTitle = menuAttrTitle(title, sub: sub)

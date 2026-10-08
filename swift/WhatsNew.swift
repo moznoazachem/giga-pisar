@@ -10,11 +10,9 @@ import AppKit
 let WHATS_NEW: [String] = uiIsRussian ? [
     "Новое окно первого запуска: семь коротких шагов, от модели и доступов до проверки диктовки",
     "Если загрузка модели сорвалась, можно попробовать снова, не перезапуская Писаря",
-    "В меню снова видны значки",
 ] : [
     "A new first-run window: seven short steps, from the model and permissions to a dictation check",
     "If the model download fails, you can try again without restarting Pisar",
-    "Icons are back in the menu",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.
