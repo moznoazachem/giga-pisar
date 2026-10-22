@@ -1604,7 +1604,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
                           "Pisar could not do it. The selection is untouched")))
                     return
                 }
-                self.paste(out, spacing: false) {
+                // Ответ заменяет выделенное — только там, где оно было, при любой галочке.
+                self.paste(out, spacing: false, checkTarget: true) {
                     guard self.take == current else { return }
                     if Brain.shared.chipsEnabled {
                         let p = typingAnchorIfKnown() ?? NSEvent.mouseLocation
@@ -2094,6 +2095,18 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
         settingsChanged()
     }
 
+    /// Paste only where the take started: same app, same focused field. When off, a plain
+    /// paste goes wherever the focus is now. Replacing text keeps the check either way. On by default.
+    var pasteOnlyIntoOriginal: Bool {
+        get { UserDefaults.standard.object(forKey: "pasteOnlyIntoOriginal") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "pasteOnlyIntoOriginal") }
+    }
+
+    @objc func togglePasteOnlyIntoOriginal() {
+        pasteOnlyIntoOriginal.toggle()
+        settingsChanged()
+    }
+
     /// Одно ли это предложение. Знак конца внутри текста (а не в самом
     /// конце) значит, что предложений несколько: тогда не трогаем ничего.
     /// Сокращения вроде «т.д.» тоже попадают под это правило — и хорошо,
@@ -2120,8 +2133,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
 
     /// simplify: only plain dictation goes through «Упрощать синтаксис»; Brain answers,
     /// edits of a selection and «Вернуть как было» are put in exactly as they are.
+    /// checkTarget: only into the field where the recording started, whatever «Paste only into the original field» says.
     func paste(_ text: String, offerChips: Bool = false, spacing: Bool = true, simplify: Bool = false,
-               replacing: Int? = nil, completion: (() -> Void)? = nil, until: Date = Date().addingTimeInterval(60)) {
+               checkTarget: Bool = false, replacing: Int? = nil, completion: (() -> Void)? = nil, until: Date = Date().addingTimeInterval(60)) {
         guard Date() < until else { saveDictation(text, take: take); notifySavedDictation(); refreshWorkState(); return }
         if recordingInProgress {
             deferredOperations += 1
@@ -2131,7 +2145,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
                 self.deferredOperations -= 1
                 guard self.take == current else { self.notifySavedDictation(); return }
                 self.paste(text, offerChips: offerChips, spacing: spacing, simplify: simplify,
-                           replacing: replacing, completion: completion, until: until)
+                           checkTarget: checkTarget, replacing: replacing, completion: completion, until: until)
             }
             return
         }
@@ -2146,28 +2160,30 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
         let current = take
         let target = takeTarget
         let focus = takeFocus
+        // Стирание (replacing) в чужом окне снесло бы чужой текст — там сверка остаётся всегда.
+        let anywhere = replacing == nil && !checkTarget && !pasteOnlyIntoOriginal
+        func atTarget() -> Bool {
+            NSWorkspace.shared.frontmostApplication?.processIdentifier == target && matchesDictationFocus(focus)
+        }
+        func sameTarget() -> Bool { anywhere || atTarget() }
         var interruptedByRecording = false
         func retryAfterRecording() {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 guard self.take == current else { self.notifySavedDictation(); return }
-                self.paste(text, offerChips: offerChips, spacing: false, replacing: replacing,
+                self.paste(text, offerChips: offerChips, spacing: false, checkTarget: checkTarget, replacing: replacing,
                            completion: completion, until: until)
             }
         }
         clipboard.paste(text, keepOnClipboard: keepOnClipboard, stale: { [weak self] in self?.take != current }, allowed: { [weak self] in
             guard let self else { return false }
             if self.recordingInProgress { interruptedByRecording = true; return false }
-            return self.take == current
-                && NSWorkspace.shared.frontmostApplication?.processIdentifier == target
-                && matchesDictationFocus(focus)
+            return self.take == current && sameTarget()
         }, action: { [weak self] isOurs, done in
             guard let self else { done(false); return }
             if self.recordingInProgress { done(true); retryAfterRecording(); return }
             let insert = {
-                guard self.take == current, !self.recordingInProgress,
-                      NSWorkspace.shared.frontmostApplication?.processIdentifier == target,
-                      matchesDictationFocus(focus) else {
+                guard self.take == current, !self.recordingInProgress, sameTarget() else {
                     if replacing == nil && self.take == current && self.recordingInProgress {
                         done(true); retryAfterRecording(); return
                     } else if replacing != nil {
@@ -2181,7 +2197,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
                                         "Clipboard changed; paste stopped. Previous text may have been removed during replacement; dictation: menu → Copy Last Dictation."))
                     done(false); return
                 }
-                let result = self.finishPaste(offerChips: offerChips, isOurs: isOurs)
+                // Команды из менюшки правят текст по месту начала записи — в другом месте не предлагаем.
+                let result = self.finishPaste(offerChips: offerChips && atTarget(), isOurs: isOurs)
                 if result { self.lastText = text; completion?() }
                 done(result)
             }

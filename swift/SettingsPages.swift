@@ -145,6 +145,15 @@ struct DictationPage: View {
                         .labelsHidden().toggleStyle(.switch).controlSize(.mini)
                 }
                 RowDivider()
+                SettingsRow(icon: "scope", color: sys(.systemIndigo),
+                            title: L("Вставлять только в исходное поле", "Paste Only into the Original Field"),
+                            subtitle: L("Если сменить программу или поле, пока идёт диктовка, текст не вставится, а останется в меню → Скопировать последнюю диктовку. Выключи, чтобы вставлять туда, где курсор сейчас.",
+                                        "If you switch to another app or field while dictating, the text is not pasted and stays in the menu → Copy Last Dictation. Turn off to paste wherever the cursor is now.")) {
+                    Toggle("", isOn: Binding(get: { model.app.pasteOnlyIntoOriginal },
+                                             set: { _ in model.act { app.togglePasteOnlyIntoOriginal() } }))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                }
+                RowDivider()
                 SettingsRow(icon: "music.note.slash", color: sys(.systemRed),
                             title: L("Приглушать звук во время диктовки", "Mute Sound While Dictating"),
                             subtitle: L("Громкость вернётся сама, как только отпустишь клавишу.",
