@@ -68,5 +68,28 @@ enum OrtError: Error { case failed(String) }
         retry.stop { _ in }
         spin(0.1)
         print("PASS old start error does not reset a newer pending held press")
+
+        let left: [Float] = [1, 0, -1, 0.5], right: [Float] = [0, 0, 1, 0.5]
+        left.withUnsafeBufferPointer { l in
+            right.withUnsafeBufferPointer { r in
+                precondition(Mic.mixToMono([l.baseAddress!], frames: 4) == left)
+                precondition(Mic.mixToMono([l.baseAddress!, r.baseAddress!], frames: 4) == [0.5, 0, 0, 0.5])
+            }
+        }
+        print("PASS channels are averaged into mono")
+
+        precondition(Mic.level(of: [Float](repeating: 0, count: 4800), rate: 48000) == 0)
+        precondition(Mic.level(of: [Float](repeating: 1, count: 4800), rate: 48000) == 1)
+        // A single loud 10 ms window counts, however quiet the rest is.
+        let burst = [Float](repeating: 0, count: 4320) + [Float](repeating: 1, count: 480)
+        precondition(Mic.level(of: burst, rate: 48000) == 1)
+        print("PASS level follows the loudest 10 ms window")
+
+        let tone44 = (0..<44100).map { Float(sin(Double($0) * 0.05)) }
+        let tone48 = (0..<48000).map { Float(sin(Double($0) * 0.05)) }
+        let joined = Mic.resample([(rate: 44100, samples: tone44), (rate: 48000, samples: tone48)], to: 16000)
+        precondition(abs(joined.count - 32000) < 64, "two one-second segments give two seconds: \(joined.count)")
+        precondition(Mic.resample([], to: 16000).isEmpty)
+        print("PASS segments at different rates are resampled separately and joined")
     }
 }

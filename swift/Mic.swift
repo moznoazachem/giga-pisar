@@ -8,21 +8,26 @@
 // Теперь берём звук в РОДНОМ формате устройства (драйверу — самая простая
 // работа «отдай как есть»), а в 16 кГц для модели пересчитываем сами,
 // штатным AVAudioConverter. Так пишут MacWhisper и остальные серьёзные
-// диктовалки. Бонус: движок держим готовым между записями — старт быстрее,
+// диктовалки. Бонус: аудиоблок держим готовым между записями — старт быстрее,
 // и начало фразы не съедается.
+//
+// Пишем через голый AUHAL, а не через AVAudioEngine. У AVAudioEngine на macOS
+// нет штатного способа выбрать микрофон: устройство приходилось назначать
+// в уже собранный движок, и тот после этого то и дело останавливался сам —
+// запись приходила пустой (#44). AUHAL получает микрофон до
+// AudioUnitInitialize, как и задумано Apple. Так же пишет VoiceInk.
 
 import AVFoundation
 import CoreAudio
 
 final class Mic {
-    /// Движок живёт между записями: повторный старт заметно быстрее первого.
+    /// Аудиоблок живёт между записями: повторный старт заметно быстрее первого.
     /// Микрофон между записями НЕ открыт (оранжевой точки нет) — устройство
     /// включается только на время start()…stop().
-    private var engine: AVAudioEngine?
-    private var engineDevice: AudioDeviceID = 0 // input the cached engine was built on
-    private var configurationChanged = false
-    private var chunks: [[Float]] = []   // куски записи в родной частоте, моно
-    private var nativeRate: Double = 0
+    private var input: InputUnit?
+    private var inputStale = false // devices changed during a recording; audioQueue only
+    private var segments: [(rate: Double, samples: [Float])] = [] // моно, по микрофонам; audioQueue only
+    private var drainTimer: DispatchSourceTimer?
     private let lock = NSLock()
     private(set) var isRecording = false
     private let audioQueue = DispatchQueue(label: "ru.panda.giga.audio")
@@ -31,13 +36,12 @@ final class Mic {
     private var engineActive = false // audioQueue only
     private let startOverride: (() throws -> Void)?
     private let stopOverride: (() -> [Float])?
-    private static var pauseBetween: Bool { UserDefaults.standard.bool(forKey: "micPauseBetween") }
 
     /// Microphones came or went, or the system default changed. Main queue.
     var onDevicesChange: (() -> Void)?
 
-    /// Громкость для волны, 0…1. Считается в звуковом потоке, читается
-    /// из главного — живёт под тем же локом, что и куски записи.
+    /// Громкость для волны, 0…1. Считается на audioQueue, читается
+    /// из главного — живёт под локом.
     ///
     /// Это ПИКОВЫЙ измеритель с удержанием: между двумя взглядами волны
     /// микрофон может прислать и три куска, и ни одного, и всплеск голоса
@@ -72,21 +76,11 @@ final class Mic {
     // Injection exercises the real lifecycle without opening a microphone.
     init(startEngine: (() throws -> Void)? = nil, stopEngine: (() -> [Float])? = nil) {
         startOverride = startEngine; stopOverride = stopEngine
-        // Сменился микрофон или его формат (воткнули наушники, виртуалка
-        // передёрнула устройство) — старый движок больше не годится,
-        // следующая запись соберёт себе новый.
-        NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main
-        ) { [weak self] _ in
-            guard let self else { return }
-            self.audioQueue.async { self.dropEngine() }
-        }
-        // The engine reports configuration changes only while it runs, and
-        // between recordings it is stopped. A microphone that vanished and
-        // came back while idle (a monitor's USB hub powered down with the
-        // display, a headset switched off) went unnoticed, and the cached
-        // engine stayed bound to the dead device until relaunch. CoreAudio
-        // tells us about the device list and the default input at any time.
+        // A microphone that vanished and came back while idle (a monitor's
+        // USB hub powered down with the display, a headset switched off)
+        // must not leave the prepared unit bound to the dead device.
+        // CoreAudio tells us about the device list and the default input
+        // at any time.
         let system = AudioObjectID(kAudioObjectSystemObject)
         for selector in [kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDevices] {
             var addr = AudioObjectPropertyAddress(mSelector: selector,
@@ -99,11 +93,40 @@ final class Mic {
         }
     }
 
-    /// The cached engine no longer matches the hardware: rebuild it on the
-    /// next start, or right after the current recording ends. audioQueue only.
+    /// The prepared unit may no longer match the hardware: rebuild it on the
+    /// next start. During a recording only a microphone that is gone forces
+    /// a move: the recording goes on from the one that should be used now.
+    /// A microphone that merely became preferred (the chosen one plugged
+    /// back in, another system input) waits for the next take — a freshly
+    /// plugged USB microphone takes about 1.6 s to start, all of it silence
+    /// in the middle of the phrase. audioQueue only.
     private func dropEngine() {
-        if engineActive { configurationChanged = true }
-        else { engine = nil }
+        guard engineActive, let current = input else { input = nil; return }
+        inputStale = true // rebuild after this take in any case
+        guard !Self.isAlive(current.device) else { return }
+        let wanted = Self.chosenInputDevice() ?? Self.defaultInputDevice()
+        guard wanted != current.device, wanted != 0 else { return }
+        current.stop()
+        drain()
+        do {
+            let unit = try InputUnit(device: wanted)
+            try unit.start()
+            input = unit
+            inputStale = false
+            segments.append((rate: unit.rate, samples: []))
+        } catch {
+            // What was recorded so far is kept; the take just ends here.
+            NSLog("Гига Писарь: microphone switch during a recording failed: \(error)")
+        }
+    }
+
+    private static func isAlive(_ id: AudioDeviceID) -> Bool {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsAlive,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var alive: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &alive) == noErr && alive != 0
     }
 
     private static func defaultInputDevice() -> AudioDeviceID {
@@ -170,6 +193,15 @@ final class Mic {
         return UnsafeMutableAudioBufferListPointer(list).reduce(0) { $0 + Int($1.mNumberChannels) }
     }
 
+    private static func nominalRate(_ id: AudioDeviceID) -> Double {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var rate: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+        return AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &rate) == noErr ? rate : 0
+    }
+
     private static func stringProperty(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
         var addr = AudioObjectPropertyAddress(mSelector: selector,
                                               mScope: kAudioObjectPropertyScopeGlobal,
@@ -212,101 +244,64 @@ final class Mic {
     }
 
     private func startEngine() throws {
-        let chosen = Self.chosenInputDevice()
-        let device = chosen ?? Self.defaultInputDevice()
-        if engine != nil, device != engineDevice { engine = nil }
-        do { try startEngine(on: device, assign: chosen != nil) } catch {
-            // A cached engine can hold a device that is gone even when no
+        do { try startInput(on: Self.chosenInputDevice() ?? Self.defaultInputDevice()) } catch {
+            // A prepared unit can hold a device that is gone even when no
             // notification arrived, and a fresh one can catch CoreAudio
             // mid-switch right after a device vanished. Retry once from
             // scratch a moment later before telling the user it failed.
-            NSLog("Гига Писарь: audio engine failed to start, rebuilding: \(error)")
-            engine = nil
+            NSLog("Гига Писарь: microphone failed to start, rebuilding: \(error)")
+            input = nil
             Thread.sleep(forTimeInterval: 0.2)
-            let retry = Self.chosenInputDevice()
-            try startEngine(on: retry ?? Self.defaultInputDevice(), assign: retry != nil)
+            try startInput(on: Self.chosenInputDevice() ?? Self.defaultInputDevice())
         }
     }
 
-    /// assign включён, когда выбранный вход доступен: назначаем его свежему движку.
-    /// При false оставляем выбор системного входа AVAudioEngine.
-    private func startEngine(on device: AudioDeviceID, assign: Bool) throws {
+    private func startInput(on device: AudioDeviceID) throws {
         guard device != 0 else { throw OrtError.failed("в системе нет микрофона") }
-        let fresh = engine == nil
-        let e = engine ?? AVAudioEngine()
-        let input = e.inputNode
-        // Point the fresh engine at the chosen device before asking for the
-        // format: the format is the device's.
-        if fresh, assign {
-            guard let unit = input.audioUnit else {
-                throw OrtError.failed("нет аудиоблока для выбора микрофона")
-            }
-            var id = device
-            let err = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
-                                           kAudioUnitScope_Global, 0, &id,
-                                           UInt32(MemoryLayout<AudioDeviceID>.size))
-            guard err == noErr else {
-                throw OrtError.failed("микрофон не выбрался: \(err)")
-            }
+        // The prepared unit keeps the format the device had when it was
+        // built; a device switched to another rate or channel count since
+        // then would be read in the wrong format.
+        if let prepared = input, prepared.device != device
+            || prepared.rate != Self.nominalRate(device)
+            || prepared.channels != Self.inputChannels(device) {
+            input = nil
         }
-        let fmt = input.inputFormat(forBus: 0) // родной формат устройства
-        guard fmt.sampleRate > 0, fmt.channelCount > 0 else {
-            engine = nil
-            throw OrtError.failed("микрофон не отдал формат звука")
-        }
-        nativeRate = fmt.sampleRate
-        lock.lock(); chunks = []; lock.unlock()
-
-        input.removeTap(onBus: 0) // на случай хвоста от прошлого раза
-        input.installTap(onBus: 0, bufferSize: 4096, format: fmt) { [weak self] buf, _ in
-            guard let self, let data = buf.floatChannelData else { return }
-            let n = Int(buf.frameLength)
-            guard n > 0 else { return }
-            let channels = Int(buf.format.channelCount)
-            var mono = [Float](repeating: 0, count: n)
-            for c in 0..<channels {
-                let p = data[c]
-                for i in 0..<n { mono[i] += p[i] }
-            }
-            if channels > 1 {
-                let k = Float(channels)
-                for i in 0..<n { mono[i] /= k }
-            }
-            // Громкость: не среднее по всему куску, а самое громкое
-            // окно в 10 мс внутри него. Кусок в 4096 отсчётов — это ~85 мс;
-            // среднее по такому сроку размазывает слоги в ровный гул,
-            // и волна получается вялой, хотя голос живой.
-            let window = max(1, Int(self.nativeRate / 100))
-            var peak: Float = 0
-            var i = 0
-            while i < n {
-                let edge = min(i + window, n)
-                var sum: Float = 0
-                for j in i..<edge { sum += mono[j] * mono[j] }
-                peak = max(peak, sqrt(sum / Float(edge - i)))
-                i = edge
-            }
-            let db = 20 * log10(max(peak, 1e-7))
-            let norm = min(max((db - Self.dbFloor) / (Self.dbCeil - Self.dbFloor), 0), 1)
-            let level = pow(norm, Self.curve)
-            self.lock.lock()
-            self.chunks.append(mono)
-            self.levelPeak = max(self.levelPeak, level)
-            self.levelSeen = true
-            self.lock.unlock()
-        }
-
-        e.prepare()
-        do {
-            try e.start()
-        } catch {
-            input.removeTap(onBus: 0)
-            engine = nil // сломанный движок не переиспользуем
+        let unit = try input ?? InputUnit(device: device)
+        segments = [(rate: unit.rate, samples: [])]
+        do { try unit.start() } catch {
+            input = nil // сломанный блок не переиспользуем
             throw error
         }
-        engine = e
-        engineDevice = device
+        input = unit
         engineActive = true
+        startDraining()
+    }
+
+    /// The real-time callback only parks buffers; turning them into mono
+    /// samples and the level happens here, on audioQueue. 20 ms is two
+    /// windows of the level meter: the wave stays live, the queue stays idle.
+    private func startDraining() {
+        let timer = DispatchSource.makeTimerSource(queue: audioQueue)
+        timer.schedule(deadline: .now() + 0.02, repeating: 0.02)
+        timer.setEventHandler { [weak self] in self?.drain() }
+        timer.resume()
+        drainTimer = timer
+    }
+
+    private func drain() {
+        guard let unit = input, !segments.isEmpty else { return }
+        var peak: Float = 0, seen = false
+        unit.drain { channels, frames in
+            let mono = Self.mixToMono(channels, frames: frames)
+            peak = max(peak, Self.level(of: mono, rate: unit.rate))
+            seen = true
+            segments[segments.count - 1].samples += mono
+        }
+        guard seen else { return }
+        lock.lock()
+        levelPeak = max(levelPeak, peak)
+        levelSeen = true
+        lock.unlock()
     }
 
     /// Останавливает запись и отдаёт всё записанное: 16 кГц, моно.
@@ -332,23 +327,63 @@ final class Mic {
     }
 
     private func stopEngine() -> [Float]? {
-        guard engineActive, let e = engine else { return nil }
-        e.inputNode.removeTap(onBus: 0)
-        if Self.pauseBetween { e.pause() } else { e.stop() } // сам движок оставляем — следующий старт быстрее
+        guard engineActive, let unit = input else { return nil }
+        unit.stop() // сам блок оставляем — следующий старт быстрее
+        drainTimer?.cancel(); drainTimer = nil
+        drain() // хвост, пришедший после последнего разбора
         engineActive = false
+        let recorded = segments
+        segments = []
         lock.lock()
-        let recorded = chunks
-        chunks = []
         levelPeak = 0; levelHeld = 0; levelSeen = false // микрофон закрыт — волне показывать нечего
         lock.unlock()
-        // Not a single buffer arrived: the engine ran on a device that is
+        // Not a single buffer arrived: the unit ran on a device that is
         // no longer delivering sound. Never reuse it.
-        if configurationChanged || recorded.isEmpty {
-            engine = nil
-            configurationChanged = false
+        if inputStale || recorded.allSatisfy({ $0.samples.isEmpty }) {
+            input = nil
+            inputStale = false
         }
-        let native = recorded.flatMap { $0 }
-        return Self.resample(native, from: nativeRate, to: 16000)
+        return Self.resample(recorded, to: 16000)
+    }
+
+    /// Каналы складываются и делятся на их число.
+    static func mixToMono(_ channels: [UnsafePointer<Float>], frames: Int) -> [Float] {
+        var mono = [Float](repeating: 0, count: frames)
+        for p in channels {
+            for i in 0..<frames { mono[i] += p[i] }
+        }
+        if channels.count > 1 {
+            let k = Float(channels.count)
+            for i in 0..<frames { mono[i] /= k }
+        }
+        return mono
+    }
+
+    /// Громкость для волны, 0…1: не среднее по всему куску, а самое громкое
+    /// окно в 10 мс внутри него. Кусок в 4096 отсчётов — это ~85 мс;
+    /// среднее по такому сроку размазывает слоги в ровный гул,
+    /// и волна получается вялой, хотя голос живой.
+    static func level(of mono: [Float], rate: Double) -> Float {
+        let n = mono.count
+        let window = max(1, Int(rate / 100))
+        var peak: Float = 0
+        var i = 0
+        while i < n {
+            let edge = min(i + window, n)
+            var sum: Float = 0
+            for j in i..<edge { sum += mono[j] * mono[j] }
+            peak = max(peak, sqrt(sum / Float(edge - i)))
+            i = edge
+        }
+        let db = 20 * log10(max(peak, 1e-7))
+        let norm = min(max((db - dbFloor) / (dbCeil - dbFloor), 0), 1)
+        return pow(norm, curve)
+    }
+
+    /// Запись, которая шла с нескольких микрофонов подряд: каждый отрезок
+    /// в своей частоте пересчитывается отдельно, потом склеивается.
+    static func resample(_ segments: [(rate: Double, samples: [Float])], to: Double) -> [Float] {
+        segments.flatMap { resample($0.samples, from: $0.rate, to: to) }
     }
 
     /// Пересчёт частоты штатным конвертером Apple — тем же классом качества,
@@ -396,4 +431,163 @@ final class Mic {
         }
         return out
     }
+}
+
+/// One AUHAL input unit bound to one microphone, plus the ring its
+/// real-time callback fills and audioQueue empties. The callback must not
+/// allocate or wait, so it renders straight into preallocated slots and
+/// only bumps a counter under a lock held for a few instructions.
+private final class InputUnit {
+    let device: AudioDeviceID
+    let rate: Double
+    let channels: Int
+    private let unit: AudioUnit
+    private let maxFrames: Int
+    private let slotCount: Int
+    private let samples: UnsafeMutablePointer<Float> // slotCount × channels × maxFrames
+    private let slotFrames: UnsafeMutablePointer<Int>
+    private let target: UnsafeMutableAudioBufferListPointer // render destination, repointed per slot
+    private let ringLock = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
+    private var written = 0, read = 0 // under ringLock
+
+    init(device: AudioDeviceID) throws {
+        var desc = AudioComponentDescription(componentType: kAudioUnitType_Output,
+                                             componentSubType: kAudioUnitSubType_HALOutput,
+                                             componentManufacturer: kAudioUnitManufacturer_Apple,
+                                             componentFlags: 0, componentFlagsMask: 0)
+        guard let component = AudioComponentFindNext(nil, &desc) else {
+            throw OrtError.failed("нет аудиоблока HAL")
+        }
+        var made: AudioUnit?
+        try Self.check(AudioComponentInstanceNew(component, &made), "аудиоблок не создался")
+        guard let unit = made else { throw OrtError.failed("аудиоблок не создался") }
+        let hw: AudioStreamBasicDescription, maxFrames: Int, ioFrames: Int
+        do {
+            // Input on, output off, the microphone set — all before
+            // AudioUnitInitialize, so the unit is built for this device.
+            var on: UInt32 = 1, off: UInt32 = 0
+            let flagSize = UInt32(MemoryLayout<UInt32>.size)
+            try Self.check(AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO,
+                                                kAudioUnitScope_Input, 1, &on, flagSize), "вход не включился")
+            try Self.check(AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO,
+                                                kAudioUnitScope_Output, 0, &off, flagSize), "выход не выключился")
+            var id = device
+            try Self.check(AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                                                kAudioUnitScope_Global, 0, &id,
+                                                UInt32(MemoryLayout<AudioDeviceID>.size)), "микрофон не выбрался")
+            // The device side of the input bus is the device's own format;
+            // we take it as is and only ask for Float32, one buffer per channel.
+            var format = AudioStreamBasicDescription()
+            var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            try Self.check(AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat,
+                                                kAudioUnitScope_Input, 1, &format, &size),
+                           "микрофон не отдал формат звука")
+            guard format.mSampleRate > 0, format.mChannelsPerFrame > 0 else {
+                throw OrtError.failed("микрофон не отдал формат звука")
+            }
+            hw = format
+            var client = AudioStreamBasicDescription(
+                mSampleRate: hw.mSampleRate, mFormatID: kAudioFormatLinearPCM,
+                mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved,
+                mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
+                mChannelsPerFrame: hw.mChannelsPerFrame, mBitsPerChannel: 32, mReserved: 0)
+            try Self.check(AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat,
+                                                kAudioUnitScope_Output, 1, &client, size),
+                           "формат звука не принят")
+            var slice: UInt32 = 0
+            size = UInt32(MemoryLayout<UInt32>.size)
+            try Self.check(AudioUnitGetProperty(unit, kAudioUnitProperty_MaximumFramesPerSlice,
+                                                kAudioUnitScope_Global, 0, &slice, &size),
+                           "аудиоблок не назвал размер буфера")
+            var io: UInt32 = 0
+            var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSize,
+                                                  mScope: kAudioObjectPropertyScopeGlobal,
+                                                  mElement: kAudioObjectPropertyElementMain)
+            if AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &io) != noErr { io = slice }
+            ioFrames = Int(max(1, min(io, slice)))
+            maxFrames = Int(max(slice, io))
+        } catch {
+            AudioComponentInstanceDispose(unit)
+            throw error
+        }
+        self.device = device
+        self.unit = unit
+        rate = hw.mSampleRate
+        channels = Int(hw.mChannelsPerFrame)
+        self.maxFrames = maxFrames
+        // About a second of the device's usual buffers: audioQueue empties
+        // the ring every 20 ms, so only a queue stuck for a whole second
+        // would lose sound.
+        slotCount = max(8, Int(hw.mSampleRate) / ioFrames)
+        samples = .allocate(capacity: slotCount * channels * maxFrames)
+        slotFrames = .allocate(capacity: slotCount)
+        target = AudioBufferList.allocate(maximumBuffers: channels)
+        ringLock.initialize(to: os_unfair_lock())
+
+        var callback = AURenderCallbackStruct(inputProc: inputCallback,
+                                              inputProcRefCon: Unmanaged.passUnretained(self).toOpaque())
+        try Self.check(AudioUnitSetProperty(unit, kAudioOutputUnitProperty_SetInputCallback,
+                                            kAudioUnitScope_Global, 0, &callback,
+                                            UInt32(MemoryLayout<AURenderCallbackStruct>.size)),
+                       "аудиоблок не принял приём звука")
+        try Self.check(AudioUnitInitialize(unit), "аудиоблок не запустился")
+    }
+
+    deinit {
+        AudioOutputUnitStop(unit)
+        AudioUnitUninitialize(unit)
+        AudioComponentInstanceDispose(unit)
+        samples.deallocate()
+        slotFrames.deallocate()
+        free(target.unsafeMutablePointer)
+        ringLock.deallocate()
+    }
+
+    func start() throws {
+        os_unfair_lock_lock(ringLock); read = written; os_unfair_lock_unlock(ringLock)
+        try Self.check(AudioOutputUnitStart(unit), "микрофон не включился")
+    }
+
+    func stop() { AudioOutputUnitStop(unit) }
+
+    /// Hands every buffer parked since the last call to `body`, one pointer
+    /// per channel. audioQueue only.
+    func drain(_ body: ([UnsafePointer<Float>], Int) -> Void) {
+        os_unfair_lock_lock(ringLock); let from = read, to = written; os_unfair_lock_unlock(ringLock)
+        guard from < to else { return }
+        for i in from..<to {
+            let slot = i % slotCount
+            body((0..<channels).map { UnsafePointer(samples + (slot * channels + $0) * maxFrames) },
+                 slotFrames[slot])
+        }
+        os_unfair_lock_lock(ringLock); read = to; os_unfair_lock_unlock(ringLock)
+    }
+
+    /// Real-time thread.
+    fileprivate func render(_ flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+                            _ timeStamp: UnsafePointer<AudioTimeStamp>, _ frames: UInt32) -> OSStatus {
+        let n = Int(frames)
+        guard n <= maxFrames else { return noErr }
+        os_unfair_lock_lock(ringLock)
+        let slot = written - read < slotCount ? written % slotCount : -1
+        os_unfair_lock_unlock(ringLock)
+        guard slot >= 0 else { return noErr } // ring full: the buffer is lost
+        for c in 0..<channels {
+            target[c] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(n * 4),
+                                    mData: UnsafeMutableRawPointer(samples + (slot * channels + c) * maxFrames))
+        }
+        let status = AudioUnitRender(unit, flags, timeStamp, 1, frames, target.unsafeMutablePointer)
+        guard status == noErr else { return status }
+        slotFrames[slot] = n
+        os_unfair_lock_lock(ringLock); written += 1; os_unfair_lock_unlock(ringLock)
+        return noErr
+    }
+
+    private static func check(_ status: OSStatus, _ what: String) throws {
+        guard status == noErr else { throw OrtError.failed("\(what): \(status)") }
+    }
+}
+
+private let inputCallback: AURenderCallback = { refCon, flags, timeStamp, _, frames, _ in
+    Unmanaged<InputUnit>.fromOpaque(refCon).takeUnretainedValue().render(flags, timeStamp, frames)
 }
