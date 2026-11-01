@@ -159,6 +159,31 @@ final class Mic {
         let name: String
     }
 
+    struct PreferredInput: Identifiable {
+        let uid: String
+        let name: String
+        var id: String { uid }
+    }
+
+    /// No list preserves the old single-device choice; an empty list follows
+    /// the system input explicitly.
+    static var preferredInputs: [PreferredInput] {
+        get {
+            if let rows = UserDefaults.standard.array(forKey: "micPreferredInputs") as? [[String: String]] {
+                return rows.compactMap { row in
+                    guard let uid = row["uid"], !uid.isEmpty, let name = row["name"] else { return nil }
+                    return PreferredInput(uid: uid, name: name)
+                }
+            }
+            guard let uid = chosenUID, !uid.isEmpty else { return [] }
+            return [PreferredInput(uid: uid, name: chosenName ?? uid)]
+        }
+        set {
+            UserDefaults.standard.set(newValue.map { ["uid": $0.uid, "name": $0.name] },
+                                      forKey: "micPreferredInputs")
+        }
+    }
+
     /// Все устройства, у которых есть хотя бы один канал ввода.
     static func inputDevices() -> [InputDevice] {
         let system = AudioObjectID(kAudioObjectSystemObject)
@@ -173,6 +198,7 @@ final class Mic {
         return ids.compactMap { id in
             guard inputChannels(id) > 0,
                   let uid = stringProperty(id, kAudioDevicePropertyDeviceUID),
+                  !uid.hasPrefix("CADefaultDeviceAggregate-"),
                   let name = stringProperty(id, kAudioObjectPropertyName)
             else { return nil }
             return InputDevice(id: id, uid: uid, name: name)
@@ -216,8 +242,11 @@ final class Mic {
     /// Возвращает ID выбранного входа, если он доступен в списке устройств.
     /// nil означает, что вызывающий код должен использовать системный вход.
     private static func chosenInputDevice() -> AudioDeviceID? {
-        guard let uid = chosenUID else { return nil }
-        return inputDevices().first { $0.uid == uid }?.id
+        preferredInput(preferredInputs, available: inputDevices())?.id
+    }
+
+    static func preferredInput(_ preferred: [PreferredInput], available: [InputDevice]) -> InputDevice? {
+        preferred.lazy.compactMap { wanted in available.first { $0.uid == wanted.uid } }.first
     }
 
     /// Запускает запись. Бросает, если устройство не завелось, — тогда

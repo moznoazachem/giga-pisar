@@ -4,6 +4,7 @@
 import AppKit
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 
 private func sys(_ c: NSColor) -> Color { Color(nsColor: c) }
 
@@ -191,38 +192,143 @@ struct MicCard: View {
 
     var body: some View {
         let devices = Mic.inputDevices()
-        let chosen = Mic.chosenUID ?? ""
-        let missing = !chosen.isEmpty && !devices.contains { $0.uid == chosen }
-        SettingsCard {
-            SettingsRow(icon: "mic.fill", color: sys(.systemOrange),
-                        title: L("Микрофон", "Microphone"),
-                        subtitle: missing
-                            ? L("Не подключён, пока пишем с системного.",
-                                "Not connected, so the system one is used for now.")
-                            : chosen.isEmpty
-                                ? L("macOS меняет системный сама, например при подключении AirPods.",
-                                    "macOS switches the system one on its own, for example when AirPods connect.")
-                                : L("Используется вместо системного.",
-                                    "Used instead of the system one.")) {
-                Picker("", selection: Binding(
-                    get: { chosen },
-                    set: { uid in model.act {
-                        Mic.chosenUID = uid.isEmpty ? nil : uid
-                        Mic.chosenName = devices.first { $0.uid == uid }?.name
-                    } })) {
-                    Text(L("Как в системе", "Same as System")).tag("")
-                    Divider()
-                    ForEach(devices, id: \.uid) { d in Text(d.name).tag(d.uid) }
-                    if missing {
-                        Text(L("\(Mic.chosenName ?? chosen) (не подключён)",
-                               "\(Mic.chosenName ?? chosen) (not connected)")).tag(chosen)
+        let preferred = Mic.preferredInputs
+        let active = Mic.preferredInput(preferred, available: devices)
+        let addable = devices.filter { d in !preferred.contains { $0.uid == d.uid } }
+        SettingsGroup(L("Порядок микрофонов", "Microphone Order"), trailing: {
+            Menu(L("Добавить", "Add")) {
+                Section(L("Подключены, не в списке", "Connected, not in the list")) {
+                    ForEach(addable, id: \.uid) { d in
+                        Button(d.name) { model.act {
+                            Mic.preferredInputs = Mic.preferredInputs + [Mic.PreferredInput(uid: d.uid, name: d.name)]
+                        } }
                     }
                 }
-                .labelsHidden()
-                // Ограничиваем ширину Picker, чтобы длинное имя не растягивало строку.
-                .frame(maxWidth: 220)
+            }
+            .fixedSize()
+            .disabled(addable.isEmpty)
+        }, footer: {
+            Text(preferred.isEmpty
+                 ? L("Добавь микрофоны кнопкой «Добавить». Пока список пуст, Писарь пишет с системного входа.",
+                     "Add microphones with the Add button. While the list is empty, Pisar records from the system input.")
+                 : L("Перетащи строку, чтобы поменять порядок. Писарь пишет с первого подключённого.",
+                     "Drag a row to change the order. Pisar records from the first connected one."))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }) {
+            ForEach(preferred) { entry in
+                let connected = devices.contains { $0.uid == entry.uid }
+                MicListRow(title: entry.name,
+                           subtitle: connected ? nil : L("Не подключён", "Not connected"),
+                           dimmed: !connected) {
+                    RowIcon(systemName: "mic.fill",
+                            backgroundColor: connected ? sys(.systemOrange) : sys(.systemGray),
+                            sideLength: 22, reservesHeight: true)
+                } trailing: {
+                    HStack(spacing: 10) {
+                        if active?.uid == entry.uid { ActiveMark() }
+                        Button { model.act {
+                            Mic.preferredInputs = Mic.preferredInputs.filter { $0.uid != entry.uid }
+                        } } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless)
+                            .help(L("Убрать из списка", "Remove from the list"))
+                    }
+                }
+                // Порядок меняют, перетаскивая саму строку: ручки нет,
+                // как в списках системных настроек.
+                .contentShape(Rectangle())
+                .onDrag {
+                    dragging = entry.uid
+                    return NSItemProvider(object: entry.uid as NSString)
+                }
+                .onDrop(of: [.text], delegate: MicDrop(target: entry.uid, dragging: $dragging) { from, to in
+                    model.act {
+                        var list = Mic.preferredInputs
+                        guard let i = list.firstIndex(where: { $0.uid == from }),
+                              let j = list.firstIndex(where: { $0.uid == to }) else { return }
+                        list.move(fromOffsets: IndexSet(integer: i), toOffset: j > i ? j + 1 : j)
+                        Mic.preferredInputs = list
+                    }
+                })
+                RowDivider()
+            }
+            // Запасной вход — всегда последним: его нельзя убрать или сдвинуть,
+            // зато видно, куда пойдёт запись, когда из списка никого нет.
+            MicListRow(title: L("Системный вход", "System Input"),
+                       subtitle: preferred.isEmpty ? nil : L("Если из списка никого нет",
+                                                             "When none in the list is connected")) {
+                RowIcon(systemName: "slider.horizontal.3", backgroundColor: sys(.systemGray),
+                        sideLength: 22, reservesHeight: true)
+            } trailing: {
+                if active == nil { ActiveMark() }
             }
         }
+    }
+
+    @State private var dragging: String?
+}
+
+/// Пока строку тащат, список перестраивается сразу, как она наезжает
+/// на другую, — бросить её остаётся только формальностью.
+private struct MicDrop: DropDelegate {
+    let target: String
+    @Binding var dragging: String?
+    let move: (_ from: String, _ to: String) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let from = dragging, from != target else { return }
+        move(from, target)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
+    }
+}
+
+/// Строка списка микрофонов: геометрия как у SettingsRow, но имя
+/// неподключённого тусклое, а не вся строка.
+private struct MicListRow<Leading: View, Trailing: View>: View {
+    let title: String
+    var subtitle: String? = nil
+    var dimmed = false
+    @ViewBuilder var leading: Leading
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 11) {
+                leading.frame(width: 22, height: 22)
+                Text(title).foregroundStyle(dimmed ? .secondary : .primary)
+                Spacer(minLength: 12)
+                trailing
+            }
+            if let subtitle {
+                Text(subtitle)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 33)   // колонка 22 + просвет 11
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+    }
+}
+
+/// Пометка «с этого сейчас пишем»: зелёная капсула с точкой.
+private struct ActiveMark: View {
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(sys(.systemGreen)).frame(width: 6, height: 6)
+            Text(L("Сейчас", "Active"))
+        }
+        .font(.caption)
+        .foregroundStyle(sys(.systemGreen))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(sys(.systemGreen).opacity(0.16)))
     }
 }
 
