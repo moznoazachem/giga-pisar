@@ -27,6 +27,23 @@ struct RecordingStartTests {
         precondition(RecordingStart.edge(hotkey: 63, eventKey: 63, flags: 0, isDown: true) == .release)
         precondition(RecordingStart.edge(hotkey: 0, eventKey: 0, flags: UInt.max, isDown: false) == .none)
 
+        // A custom combination: ⌃⌥Space (code 49).
+        let ctrlOpt: UInt = 0x040000 | 0x080000
+        func custom(_ code: UInt16, _ flags: UInt, down: Bool, isRepeat: Bool = false, held: Bool) -> RecordingStart.Edge {
+            RecordingStart.customEdge(code: 49, modifiers: ctrlOpt, eventCode: code, eventFlags: flags,
+                                      keyDown: down, isRepeat: isRepeat, isDown: held)
+        }
+        precondition(custom(49, ctrlOpt, down: true, held: false) == .press)
+        precondition(custom(49, ctrlOpt | 0x800000, down: true, held: false) == .press) // fn along is fine
+        precondition(custom(49, ctrlOpt, down: true, isRepeat: true, held: true) == .none) // key repeat
+        precondition(custom(49, ctrlOpt, down: true, held: true) == .none) // already down
+        precondition(custom(49, 0x040000, down: true, held: false) == .none) // wrong modifiers
+        precondition(custom(49, ctrlOpt | 0x100000, down: true, held: false) == .none) // extra modifier
+        precondition(custom(49, 0, down: false, held: true) == .release) // modifiers let go first
+        precondition(custom(49, ctrlOpt, down: false, held: false) == .none) // stray key-up
+        precondition(custom(50, ctrlOpt, down: true, held: false) == .none) // another key
+        precondition(custom(50, ctrlOpt, down: false, held: true) == .none)
+
         let gate = RecordingStart()
         var starts = 0
         let released = gate.schedule { starts += 1 }

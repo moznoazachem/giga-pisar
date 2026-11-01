@@ -63,16 +63,35 @@ struct DictationPage: View {
                 // Поля внутри карточки держит сама камера, а не отступ:
                 // сцена занимает её целиком, клавиатура в кадре — 88 pt
                 // из 120, то есть по 16 сверху и снизу.
-                KeyboardView(hotkeyId: currentHotkey().id)
+                KeyboardView(hotkeyId: chosenHotkeyId())
                     .frame(height: 120)
             }
 
             SettingsGroup(L("Клавиша диктовки", "Dictation Key")) {
-                KeyPicker(chosen: currentHotkey().id) { id in
+                KeyPicker(chosen: chosenHotkeyId(), customTitle: customHotkey()?.title, allowCustom: true) { id in
                     model.act { app.selectHotkey(id) }
                 }
                 .padding(.vertical, 12)
                 .padding(.horizontal, 16)
+                if chosenHotkeyId() == "custom" {
+                    // Any key with modifiers (#43): Logitech and the like do not tell a right ⌘
+                    // from a left one, so a mouse button can only send an ordinary combination.
+                    HotkeyRecorder(current: customHotkey()?.title,
+                                   onRecord: { code, modifiers, name in
+                                       model.act { app.setCustomHotkey(code: code, modifiers: modifiers, name: name) }
+                                   },
+                                   onCapturing: { app.capturingHotkey = $0 })
+                        .frame(height: 40)
+                        .padding(.horizontal, 16)
+                    Text(L("Любая клавиша вместе с ⌘, ⌥, ⌃ или ⇧, или одна клавиша F1–F19. Пока сочетание зажато, идёт запись. Его можно назначить на кнопку мыши в её программе.",
+                           "Any key together with ⌘, ⌥, ⌃ or ⇧, or a single F1–F19 key. The recording runs while the combination is held. It can be assigned to a mouse button in the mouse software."))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 6)
+                        .padding(.bottom, 4)
+                }
                 // How to back out of a take (#19): nobody finds Esc on their own.
                 Text(L("Передумал во время диктовки: нажми Esc, ничего не вставится. Или скажи в конце «Писарь, отмена».",
                        "Changed your mind while dictating: press Esc and nothing is pasted. Or say “Писарь, отмена” at the end."))
@@ -588,8 +607,17 @@ struct WavePicker: View {
 
 /// Какой клавишей диктовать — картинками самих клавиш: так видно, что
 /// нажимать, не разбирая значки ⌘ и ⌥ в строке списка.
+/// The id Settings shows as chosen: "custom" even before a combination is recorded,
+/// while currentHotkey() already falls back to right ⌘.
+func chosenHotkeyId() -> String {
+    UserDefaults.standard.string(forKey: "hotkey") ?? "rcmd"
+}
+
 struct KeyPicker: View {
     let chosen: String
+    var customTitle: String? = nil
+    /// The "Custom" choice lives in Settings only; the first-run window keeps the four keys.
+    var allowCustom = false
     let pick: (String) -> Void
 
     /// Ширина в пунктах у каждой: ⌘ шире остальных, как на клавиатуре.
@@ -619,7 +647,43 @@ struct KeyPicker: View {
             // поэтому стоит за чертой, отдельно от остальных.
             Divider().frame(height: 57)
             choice(Self.apart)
+            if allowCustom { custom }
         }
+    }
+
+    /// A key drawn like the others, with the recorded combination written on it.
+    private var custom: some View {
+        let on = chosen == "custom"
+        return VStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(.white)
+                .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
+                .frame(width: 58, height: 57)
+                .overlay {
+                    if let customTitle {
+                        Text(customTitle)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.black)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.6)
+                            .padding(4)
+                    } else {
+                        Image(systemName: "keyboard")
+                            .font(.system(size: 18))
+                            .foregroundStyle(.black.opacity(0.7))
+                    }
+                }
+            Image(systemName: on ? "largecircle.fill.circle" : "circle")
+                .font(.system(size: 14))
+                .foregroundStyle(on ? Color.accentColor : Color.secondary)
+            Text(L("Своё", "Custom"))
+                .font(.system(size: 11, weight: on ? .semibold : .regular))
+                .foregroundStyle(on ? Color.primary : Color.secondary)
+        }
+        .frame(minWidth: 58)
+        .contentShape(Rectangle())
+        .onTapGesture { pick("custom") }
     }
 
     private func choice(_ key: (id: String, asset: String, width: CGFloat)) -> some View {
@@ -649,5 +713,136 @@ struct KeyPicker: View {
         let full = HOTKEYS.first { $0.id == id }?.title ?? id
         guard let bracket = full.firstIndex(of: "(") else { return full }
         return String(full[full.startIndex..<bracket]).trimmingCharacters(in: .whitespaces)
+    }
+}
+
+// MARK: - Своё сочетание клавиш (#43)
+
+/// A box that waits for a key combination: click it, press the keys, done.
+/// Esc leaves the old one. ⌘-combinations come as key equivalents, so those
+/// are taken there too, before the menu bar gets to act on them.
+struct HotkeyRecorder: NSViewRepresentable {
+    let current: String?
+    let onRecord: (UInt16, NSEvent.ModifierFlags, String) -> Void
+    let onCapturing: (Bool) -> Void
+
+    func makeNSView(context: Context) -> RecorderView {
+        let view = RecorderView()
+        view.onRecord = onRecord
+        view.onCapturing = onCapturing
+        view.current = current
+        return view
+    }
+
+    func updateNSView(_ view: RecorderView, context: Context) {
+        view.onRecord = onRecord
+        view.onCapturing = onCapturing
+        view.current = current
+    }
+
+    final class RecorderView: NSView {
+        var onRecord: (UInt16, NSEvent.ModifierFlags, String) -> Void = { _, _, _ in }
+        var onCapturing: (Bool) -> Void = { _ in }
+        var current: String? { didSet { refresh() } }
+        private var capturing = false { didSet { onCapturing(capturing); refresh() } }
+        private let label = NSTextField(labelWithString: "")
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            layer?.cornerRadius = 6
+            layer?.borderWidth = 1
+            label.alignment = .center
+            label.font = .systemFont(ofSize: 12)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(label)
+            NSLayoutConstraint.activate([
+                label.centerXAnchor.constraint(equalTo: centerXAnchor),
+                label.centerYAnchor.constraint(equalTo: centerYAnchor),
+                label.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
+            ])
+            refresh()
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        private func refresh() {
+            let active = capturing
+            layer?.borderColor = (active ? NSColor.controlAccentColor : NSColor.separatorColor).cgColor
+            layer?.backgroundColor = (active ? NSColor.controlAccentColor.withAlphaComponent(0.08)
+                                             : NSColor.textBackgroundColor).cgColor
+            label.textColor = active ? .controlAccentColor : (current == nil ? .secondaryLabelColor : .labelColor)
+            label.stringValue = active
+                ? L("Нажми сочетание клавиш… (Esc оставит прежнее)", "Press a key combination… (Esc keeps the old one)")
+                : (current ?? L("Нажми сюда и затем своё сочетание", "Click here, then press your combination"))
+        }
+
+        override var acceptsFirstResponder: Bool { true }
+        override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self) }
+        override func becomeFirstResponder() -> Bool { capturing = true; return true }
+        override func resignFirstResponder() -> Bool { capturing = false; return true }
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            if newWindow == nil, capturing { capturing = false }
+        }
+
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            guard capturing else { return super.performKeyEquivalent(with: event) }
+            take(event); return true
+        }
+
+        override func keyDown(with event: NSEvent) {
+            guard capturing else { super.keyDown(with: event); return }
+            take(event)
+        }
+
+        private func take(_ e: NSEvent) {
+            if e.keyCode == 53 { window?.makeFirstResponder(nil); return } // Esc
+            let modifiers = e.modifierFlags.intersection([.command, .option, .control, .shift])
+            guard let key = Self.keyName(e), modifiers.isEmpty == false || Self.isFunctionKey(e.keyCode) else {
+                NSSound.beep(); return
+            }
+            var name = ""
+            if modifiers.contains(.control) { name += "⌃" }
+            if modifiers.contains(.option) { name += "⌥" }
+            if modifiers.contains(.shift) { name += "⇧" }
+            if modifiers.contains(.command) { name += "⌘" }
+            name += key
+            onRecord(e.keyCode, modifiers, name)
+            window?.makeFirstResponder(nil)
+        }
+
+        private static let functionKeys: [UInt16: String] = [
+            122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6", 98: "F7", 100: "F8",
+            101: "F9", 109: "F10", 103: "F11", 111: "F12", 105: "F13", 107: "F14", 113: "F15",
+            106: "F16", 64: "F17", 79: "F18", 80: "F19",
+        ]
+
+        static func isFunctionKey(_ code: UInt16) -> Bool { functionKeys[code] != nil }
+
+        /// What to write on the key: special keys by name, the rest by their character.
+        static func keyName(_ e: NSEvent) -> String? {
+            if let f = functionKeys[e.keyCode] { return f }
+            switch e.keyCode {
+            case 49: return L("Пробел", "Space")
+            case 36: return "↩"
+            case 76: return "⌤"
+            case 48: return "⇥"
+            case 51: return "⌫"
+            case 117: return "⌦"
+            case 123: return "←"
+            case 124: return "→"
+            case 125: return "↓"
+            case 126: return "↑"
+            case 115: return "↖"
+            case 119: return "↘"
+            case 116: return "⇞"
+            case 121: return "⇟"
+            default: break
+            }
+            guard let chars = e.charactersIgnoringModifiers, chars.count == 1,
+                  let c = chars.first, !c.isWhitespace, !(c.unicodeScalars.first.map { $0.value < 32 } ?? true)
+            else { return nil }
+            return chars.uppercased()
+        }
     }
 }

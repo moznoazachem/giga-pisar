@@ -8,15 +8,15 @@ import AppKit
 
 /// Что изменилось в ЭТОЙ версии. Обновлять при каждом выпуске вместе с номером.
 let WHATS_NEW: [String] = uiIsRussian ? [
-    "Словарь замен в настройках: научите Писаря писать слова так, как вам нужно",
-    "Выбор микрофона в настройках",
-    "Своя инструкция для Мозга и свои пункты в менюшке у курсора",
-    "Окно обновления показывает, что нового, и начинает скачивать только по кнопке «Обновить»",
+    "Своё сочетание клавиш для диктовки: любая клавиша с ⌘, ⌥, ⌃ или ⇧, его можно повесить и на кнопку мыши",
+    "Запись с выбранным в настройках микрофоном больше не приходит пустой, старт записи быстрее",
+    "Если Мозг при правке на лету ответил на вопрос вместо правки, вставляется распознанный текст",
+    "⌘W закрывает окна Писаря; переключатель «Вставлять только в исходное поле»",
 ] : [
-    "A replacement dictionary in Settings: teach Pisar to spell words your way",
-    "Choose the microphone in Settings",
-    "Your own Brain instruction and your own items in the menu at the cursor",
-    "The update window shows what is new and downloads only when you click Update",
+    "Your own key combination for dictation: any key with ⌘, ⌥, ⌃ or ⇧, it can go on a mouse button too",
+    "Recording with a microphone chosen in Settings no longer comes back empty, and it starts faster",
+    "When the Brain, editing on the fly, answers a question instead of editing, the recognized text is pasted",
+    "⌘W closes Pisar windows; a “Paste only into the original field” switch",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.

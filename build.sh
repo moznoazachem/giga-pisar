@@ -44,7 +44,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 
 SOURCES=(main.swift swift/Ort.swift swift/Features.swift swift/Tokenizer.swift
          swift/Recognizer.swift swift/Audio.swift swift/Mic.swift swift/Sound.swift swift/WavePanel.swift swift/Chips.swift swift/Brain.swift swift/SettingsWindow.swift swift/RowIcon.swift swift/SettingsView.swift swift/SettingsPages.swift swift/SetupWindow.swift swift/CloudBrain.swift swift/KeyboardScene.swift swift/Updates.swift
-         swift/SelfUpdate.swift swift/WhatsNew.swift swift/UpdateWindow.swift swift/Memory.swift swift/FileHash.swift swift/Clipboard.swift swift/RecordingStart.swift swift/Dictionary.swift swift/WordForms.swift swift/DictionaryPage.swift swift/BrainCustomSheets.swift)
+         swift/SelfUpdate.swift swift/BrainCheck.swift swift/WhatsNew.swift swift/UpdateWindow.swift swift/Memory.swift swift/FileHash.swift swift/Clipboard.swift swift/RecordingStart.swift swift/Dictionary.swift swift/WordForms.swift swift/DictionaryPage.swift swift/BrainCustomSheets.swift)
 
 # универсальный бинарник: Apple Silicon + Intel в одном файле
 echo "── сборка"

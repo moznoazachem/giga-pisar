@@ -16,6 +16,8 @@ for optimization in debug optimized; do
     "$test_dir/clipboard"
     swiftc $flags -parse-as-library swift/Mic.swift scripts/test-mic-lifecycle.swift -o "$test_dir/mic"
     "$test_dir/mic"
+    swiftc $flags -parse-as-library swift/BrainCheck.swift scripts/test-brain-check.swift -o "$test_dir/brain-check"
+    "$test_dir/brain-check"
     swiftc $flags -parse-as-library swift/WavePanel.swift scripts/test-ax-budget.swift -o "$test_dir/ax"
     "$test_dir/ax"
     swiftc $flags -parse-as-library swift/Dictionary.swift swift/WordForms.swift scripts/test-dictionary.swift -o "$test_dir/dictionary"
