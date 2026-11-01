@@ -331,6 +331,10 @@ final class Mic {
         unit.stop() // сам блок оставляем — следующий старт быстрее
         drainTimer?.cancel(); drainTimer = nil
         drain() // хвост, пришедший после последнего разбора
+        let lost = unit.losses()
+        if lost.oversized > 0 || lost.overflowed > 0 {
+            NSLog("Гига Писарь: за запись потеряно буферов — больше ячейки: \(lost.oversized), кольцо полно: \(lost.overflowed)")
+        }
         engineActive = false
         let recorded = segments
         segments = []
@@ -449,6 +453,7 @@ private final class InputUnit {
     private let target: UnsafeMutableAudioBufferListPointer // render destination, repointed per slot
     private let ringLock = UnsafeMutablePointer<os_unfair_lock>.allocate(capacity: 1)
     private var written = 0, read = 0 // under ringLock
+    private var oversized = 0, overflowed = 0 // buffers lost since start; under ringLock
 
     init(device: AudioDeviceID) throws {
         var desc = AudioComponentDescription(componentType: kAudioUnitType_Output,
@@ -505,6 +510,32 @@ private final class InputUnit {
                                                   mElement: kAudioObjectPropertyElementMain)
             if AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &io) != noErr { io = slice }
             ioFrames = Int(max(1, min(io, slice)))
+            // Room for the largest buffer the device may ever pass: the top
+            // of its buffer size range, or its variable size if it has one.
+            // Without it a buffer above the slice is dropped by render below
+            // and refused by AudioUnitRender (TN2321).
+            var largest = max(slice, io)
+            var range = AudioValueRange()
+            size = UInt32(MemoryLayout<AudioValueRange>.size)
+            addr.mSelector = kAudioDevicePropertyBufferFrameSizeRange
+            if AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &range) == noErr, range.mMaximum > 0 {
+                largest = max(largest, UInt32(range.mMaximum.rounded(.up)))
+            }
+            addr.mSelector = kAudioDevicePropertyUsesVariableBufferFrameSizes
+            var variable: UInt32 = 0
+            size = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectHasProperty(device, &addr),
+               AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &variable) == noErr {
+                largest = max(largest, variable)
+            }
+            if largest > slice {
+                let status = AudioUnitSetProperty(unit, kAudioUnitProperty_MaximumFramesPerSlice,
+                                                  kAudioUnitScope_Global, 0, &largest, size)
+                if status != noErr { NSLog("Гига Писарь: аудиоблок не принял буфер \(largest): \(status)") }
+                try Self.check(AudioUnitGetProperty(unit, kAudioUnitProperty_MaximumFramesPerSlice,
+                                                    kAudioUnitScope_Global, 0, &slice, &size),
+                               "аудиоблок не назвал размер буфера")
+            }
             maxFrames = Int(max(slice, io))
         } catch {
             AudioComponentInstanceDispose(unit)
@@ -544,7 +575,7 @@ private final class InputUnit {
     }
 
     func start() throws {
-        os_unfair_lock_lock(ringLock); read = written; os_unfair_lock_unlock(ringLock)
+        os_unfair_lock_lock(ringLock); read = written; oversized = 0; overflowed = 0; os_unfair_lock_unlock(ringLock)
         try Self.check(AudioOutputUnitStart(unit), "микрофон не включился")
     }
 
@@ -563,13 +594,24 @@ private final class InputUnit {
         os_unfair_lock_lock(ringLock); read = to; os_unfair_lock_unlock(ringLock)
     }
 
+    /// Buffers the callback had to drop since start: larger than a slot,
+    /// or with the ring full. audioQueue only.
+    func losses() -> (oversized: Int, overflowed: Int) {
+        os_unfair_lock_lock(ringLock); defer { os_unfair_lock_unlock(ringLock) }
+        return (oversized, overflowed)
+    }
+
     /// Real-time thread.
     fileprivate func render(_ flags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
                             _ timeStamp: UnsafePointer<AudioTimeStamp>, _ frames: UInt32) -> OSStatus {
         let n = Int(frames)
-        guard n <= maxFrames else { return noErr }
+        guard n <= maxFrames else {
+            os_unfair_lock_lock(ringLock); oversized += 1; os_unfair_lock_unlock(ringLock)
+            return noErr
+        }
         os_unfair_lock_lock(ringLock)
         let slot = written - read < slotCount ? written % slotCount : -1
+        if slot < 0 { overflowed += 1 }
         os_unfair_lock_unlock(ringLock)
         guard slot >= 0 else { return noErr } // ring full: the buffer is lost
         for c in 0..<channels {
