@@ -52,4 +52,22 @@ final class RecordingStart {
         if !down, isDown, own || flags & family == 0 { return .release }
         return .none
     }
+
+    /// ⌘ ⌥ ⌃ ⇧ in NSEvent.ModifierFlags bits. fn is left out: F-keys and
+    /// arrows carry it on their own, and a combination must not depend on it.
+    static let modifierMask: UInt = 0x100000 | 0x080000 | 0x040000 | 0x020000
+
+    /// A custom combination (#43): a regular key with modifiers, so key-down
+    /// and key-up rather than flagsChanged. The press is the first key-down
+    /// with exactly those modifiers; the release is that key's key-up however
+    /// the modifiers are by then. Repeats and other keys are nothing.
+    static func customEdge(code: UInt16, modifiers: UInt, eventCode: UInt16, eventFlags: UInt,
+                           keyDown: Bool, isRepeat: Bool, isDown: Bool) -> Edge {
+        guard eventCode == code else { return .none }
+        if keyDown {
+            guard !isRepeat, !isDown, eventFlags & modifierMask == modifiers & modifierMask else { return .none }
+            return .press
+        }
+        return isDown ? .release : .none
+    }
 }

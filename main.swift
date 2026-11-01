@@ -46,6 +46,9 @@ struct Hotkey {
     let title: String
     let keycode: UInt16
     let flag: NSEvent.ModifierFlags
+    /// A regular key with modifiers, like ⌃⌥Space (#43). Only the custom one has them.
+    var modifiers: NSEvent.ModifierFlags = []
+    var isCustom: Bool { id == "custom" }
 }
 
 // Вычисляется при каждом обращении: названия следуют за языком меню.
@@ -62,8 +65,19 @@ func hotkeyInText() -> String {
     return t.prefix(1).lowercased() + t.dropFirst()
 }
 
+/// The combination recorded in Settings (#43), nil until one is recorded.
+func customHotkey() -> Hotkey? {
+    let d = UserDefaults.standard
+    guard let code = d.object(forKey: "customKeyCode") as? Int,
+          let name = d.string(forKey: "customKeyName"), !name.isEmpty else { return nil }
+    let modifiers = NSEvent.ModifierFlags(rawValue: UInt(d.integer(forKey: "customKeyFlags")))
+    return Hotkey(id: "custom", title: name, keycode: UInt16(code), flag: [], modifiers: modifiers)
+}
+
+/// The key in use. "custom" without a recorded combination falls back to right ⌘.
 func currentHotkey() -> Hotkey {
     let id = UserDefaults.standard.string(forKey: "hotkey") ?? "rcmd"
+    if id == "custom", let custom = customHotkey() { return custom }
     return HOTKEYS.first { $0.id == id } ?? HOTKEYS[0]
 }
 
@@ -234,6 +248,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
     /// The final text of the latest take, as it was pasted (#13).
     @objc func copyLastDictation() {
         guard let key = recoveredTakes.keys.max(), let text = recoveredTakes[key]?.last else { return }
+        copyToClipboard(text)
+    }
+
+    private func copyToClipboard(_ text: String) {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
@@ -613,8 +631,21 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
 
     func selectHotkey(_ id: String) {
         UserDefaults.standard.set(id, forKey: "hotkey")
+        installCustomHotkeyTap()
         settingsChanged()
     }
+
+    /// A combination recorded in Settings (#43): remembered and chosen at once.
+    func setCustomHotkey(code: UInt16, modifiers: NSEvent.ModifierFlags, name: String) {
+        let d = UserDefaults.standard
+        d.set(Int(code), forKey: "customKeyCode")
+        d.set(Int(modifiers.rawValue), forKey: "customKeyFlags")
+        d.set(name, forKey: "customKeyName")
+        selectHotkey("custom")
+    }
+
+    /// Settings is waiting for a new combination: the current one must not start a take meanwhile.
+    var capturingHotkey = false
 
     /// Menu and Settings show the same state: after any change both are redrawn.
     func settingsChanged() {
@@ -1440,6 +1471,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
         // пока его нет, просто не работает эта мелочь, а диктовка работает.
         NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self, Date() > self.syntheticKeyUntil else { return }
+            // The custom combination itself is the dictation key, not a shortcut.
+            if currentHotkey().isCustom, e.keyCode == currentHotkey().keycode { return }
             // Without the key tap, Esc still cancels a hands-free recording.
             if self.locked, !self.rightCmdDown {
                 if e.keyCode == 53 { self.finishHandsFree(abort: true) }
@@ -1448,11 +1481,86 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
             guard self.rightCmdDown else { return }
             self.stopRecording(abort: true)
         }
+        // A custom combination (#43) is a regular key: key-down and key-up. The tap
+        // catches it before the app in front and swallows it; these monitors are the
+        // fallback when the tap could not be made, minus the swallowing.
+        NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] e in
+            guard let self, self.hotkeyTap == nil else { return }
+            self.handleCustomKey(e)
+        }
+        NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] e in
+            guard let self, self.hotkeyTap == nil, self.handleCustomKey(e) else { return e }
+            return nil
+        }
+        installCustomHotkeyTap()
     }
 
     func handleFlags(_ e: NSEvent) {
-        switch RecordingStart.edge(hotkey: currentHotkey().keycode, eventKey: e.keyCode,
-                                   flags: e.modifierFlags.rawValue, isDown: rightCmdDown) {
+        let key = currentHotkey()
+        guard !key.isCustom else { return }
+        handleEdge(RecordingStart.edge(hotkey: key.keycode, eventKey: e.keyCode,
+                                       flags: e.modifierFlags.rawValue, isDown: rightCmdDown))
+    }
+
+    /// Key-down and key-up of the custom combination. True when the event was ours
+    /// and must not reach anyone else: the press, the release, and repeats while held.
+    @discardableResult
+    func handleCustomKey(_ e: NSEvent) -> Bool {
+        let key = currentHotkey()
+        guard key.isCustom, !capturingHotkey, Date() > syntheticKeyUntil else { return false }
+        if e.type == .keyDown, e.isARepeat, e.keyCode == key.keycode, rightCmdDown { return true }
+        let edge = RecordingStart.customEdge(code: key.keycode, modifiers: key.modifiers.rawValue,
+                                             eventCode: e.keyCode, eventFlags: e.modifierFlags.rawValue,
+                                             keyDown: e.type == .keyDown, isRepeat: e.type == .keyDown && e.isARepeat,
+                                             isDown: rightCmdDown)
+        guard edge != .none else { return false }
+        handleEdge(edge)
+        return true
+    }
+
+    private var hotkeyTap: CFMachPort?
+
+    /// The custom combination is caught before the app in front sees it (#43):
+    /// ⌃⌥Space must start a take, not whatever that app has on those keys.
+    /// Needs the Accessibility grant, the same one pasting needs.
+    func installCustomHotkeyTap() {
+        guard currentHotkey().isCustom else { removeCustomHotkeyTap(); return }
+        guard hotkeyTap == nil else { return }
+        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue | 1 << CGEventType.keyUp.rawValue)
+        let cb: CGEventTapCallBack = { _, type, event, refcon in
+            guard let refcon else { return Unmanaged.passUnretained(event) }
+            let me = Unmanaged<App>.fromOpaque(refcon).takeUnretainedValue()
+            return me.handleTappedHotkey(type: type, event: event)
+        }
+        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
+                                          options: .defaultTap, eventsOfInterest: mask, callback: cb,
+                                          userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return }
+        CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0), .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        hotkeyTap = tap
+    }
+
+    private func removeCustomHotkeyTap() {
+        guard let tap = hotkeyTap else { return }
+        CGEvent.tapEnable(tap: tap, enable: false)
+        CFMachPortInvalidate(tap)
+        hotkeyTap = nil
+    }
+
+    private func handleTappedHotkey(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let hotkeyTap { CGEvent.tapEnable(tap: hotkeyTap, enable: true) }
+            return Unmanaged.passUnretained(event)
+        }
+        guard type == .keyDown || type == .keyUp, let e = NSEvent(cgEvent: event) else {
+            return Unmanaged.passUnretained(event)
+        }
+        return handleCustomKey(e) ? nil : Unmanaged.passUnretained(event)
+    }
+
+    /// A press and a release of the dictation key, whichever key it is.
+    func handleEdge(_ edge: RecordingStart.Edge) {
+        switch edge {
         case .press:
             rightCmdDown = true
             if locked {
@@ -1874,14 +1982,23 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
                     Brain.shared.transform(text, command: "исправь") { out in
                         DispatchQueue.main.async {
                             defer { self.pendingOperations -= 1 }
-                            self.saveDictation(out ?? text, take: current)
+                            // The Brain answered the question in the take instead of fixing
+                            // it (Windows #13): the take goes in as recognized, the answer
+                            // stays in recent dictations.
+                            let answered = out.map { BrainCheck.looksLikeAnswer(to: text, result: $0) } ?? false
+                            if let out { self.saveDictation(out, take: current) }
+                            let final = answered ? text : (out ?? text)
+                            self.saveDictation(final, take: current)
                             guard self.take == current else { self.notifySavedDictation(); return }
                             self.setState(.idle)
-                            self.paste(out ?? text, simplify: true)
+                            self.paste(final, simplify: true)
                             if out == nil {
                                 Toast.shared.show(Brain.shared.failureText(
                                     L("Писарь не справился, вставил как есть",
                                       "Pisar could not do it, pasted as is")))
+                            } else if answered {
+                                Toast.shared.show(L("Мозг ответил вместо правки, вставил как распознано",
+                                                    "The Brain answered instead of editing, pasted as recognized"), seconds: 3)
                             }
                         }
                     }
