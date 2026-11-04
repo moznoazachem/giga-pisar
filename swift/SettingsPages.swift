@@ -181,6 +181,15 @@ struct DictationPage: View {
                                              set: { _ in model.act { app.toggleHush() } }))
                         .labelsHidden().toggleStyle(.switch).controlSize(.mini)
                 }
+                RowDivider()
+                SettingsRow(icon: "memorychip", color: sys(.systemGreen),
+                            title: L("Выгружать модель из памяти", "Unload the Model from Memory"),
+                            subtitle: L("Через 5 минут без диктовки или когда памяти мало. Освобождает сотни мегабайт. Следующая диктовка загрузит модель заново, и текст появится чуть позже.",
+                                        "After 5 minutes without dictation, or when memory runs low. Frees hundreds of megabytes. The next dictation loads the model again, so the text appears a little later.")) {
+                    Toggle("", isOn: Binding(get: { model.app.unloadModel },
+                                             set: { _ in model.act { app.toggleUnloadModel() } }))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                }
             }
         }
     }
