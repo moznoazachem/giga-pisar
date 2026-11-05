@@ -57,7 +57,7 @@ struct KeyboardView: NSViewRepresentable {
     var backdrop: NSColor? = nil
 
     func makeNSView(context: Context) -> SCNView {
-        let view = SCNView()
+        let view = KeyboardSCNView()
         view.backgroundColor = backdrop ?? KeyboardModel.backdrop(for: view.effectiveAppearance)
         view.antialiasingMode = .multisampling4X
         // Без этого клавиша не нажимается: SCNView не крутит анимации,
@@ -65,6 +65,7 @@ struct KeyboardView: NSViewRepresentable {
         view.isPlaying = true
         view.allowsCameraControl = false
         view.scene = context.coordinator.makeScene()
+        view.onVisibility = { [weak coordinator = context.coordinator] in coordinator?.setVisible($0) }
         context.coordinator.view = view
         context.coordinator.setFrame(edge: edge, pullback: pullback)
         context.coordinator.start(hotkeyId)
@@ -188,6 +189,26 @@ struct KeyboardView: NSViewRepresentable {
             aim(at: key, animated: !first)
             paint(key, KeyboardModel.tint)
             tinted = key
+            if visible { schedulePresses(name) }
+        }
+
+        /// Видно ли окно со сценой. Окна настроек при закрытии только
+        /// прячутся, а `isPlaying` перерисовывает сцену на каждый кадр
+        /// экрана, видна она или нет, — так спрятанное окно грело ноутбук.
+        private var visible = true
+
+        func setVisible(_ visible: Bool) {
+            guard visible != self.visible else { return }
+            self.visible = visible
+            view?.isPlaying = visible
+            timer?.invalidate()
+            timer = nil
+            if visible, let id = chosen, let name = KeyboardModel.node(for: id) {
+                schedulePresses(name)
+            }
+        }
+
+        private func schedulePresses(_ name: String) {
             timer = Timer.scheduledTimer(withTimeInterval: 5.5, repeats: true) { [weak self] _ in
                 self?.press(name)
             }
@@ -239,5 +260,29 @@ struct KeyboardView: NSViewRepresentable {
         }
 
         deinit { timer?.invalidate() }
+    }
+}
+
+/// SCNView, который сообщает, видно ли его окно: свёрнуто, закрыто,
+/// заслонено другим окном или ушло на другой стол — всё это «не видно».
+final class KeyboardSCNView: SCNView {
+    var onVisibility: ((Bool) -> Void)?
+    private var observer: NSObjectProtocol?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
+        guard let window else { onVisibility?(false); return }
+        observer = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+        ) { [weak self, weak window] _ in
+            self?.onVisibility?(window?.occlusionState.contains(.visible) ?? false)
+        }
+        onVisibility?(window.occlusionState.contains(.visible))
+    }
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 }
