@@ -162,9 +162,12 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
     var setupRunning = false
     private var setupPoll: Timer?
 
-    /// Модель. Грузится один раз в фоне; recognizer трогаем только из recognizerQueue.
+    /// Модель. Грузится в фоне при запуске и заново после выгрузки;
+    /// recognizer трогаем только из recognizerQueue.
     var recognizer: Recognizer?
     let recognizerQueue = DispatchQueue(label: "ru.panda.giga.recognizer")
+    private var modelUnload: DispatchWorkItem? // recognizerQueue only
+    private var memoryPressure: DispatchSourceMemoryPressure?
     private let dictionary = DictionaryStore() // recognizerQueue only
     private var pendingOperations = 0 // main queue; includes older takes and Brain
 
@@ -377,6 +380,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
         }
         buildMenu()
         loadModel()
+        watchMemoryPressure()
         startKeyMonitors()
         if CommandLine.arguments.contains("--setup") || needsSetup() {
             setupRunning = true
@@ -1101,11 +1105,65 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
         recognizerQueue.async { [weak self] in
             do {
                 self?.recognizer = try Recognizer(modelDir: dir)
+                self?.scheduleModelUnload()
             } catch {
                 NSLog("Гига Писарь: модель не загрузилась — \(error)")
                 DispatchQueue.main.async { self?.complainNoModel() }
             }
         }
+    }
+
+    /// Модель перед распознаванием: после выгрузки её в памяти нет.
+    /// Отказ не поднимает окно про скачивание: файлы могут быть на месте,
+    /// а человек в этот момент диктует. recognizerQueue only.
+    private func loadedRecognizer() -> Recognizer? {
+        if recognizer == nil, let dir = findModelDir() {
+            do { recognizer = try Recognizer(modelDir: dir) }
+            catch { NSLog("Гига Писарь: модель не загрузилась — \(error)") }
+        }
+        return recognizer
+    }
+
+    /// Выгружать ли модель при простое и нехватке памяти. Off by default.
+    var unloadModel: Bool {
+        get { UserDefaults.standard.bool(forKey: "unloadModel") }
+        set { UserDefaults.standard.set(newValue, forKey: "unloadModel") }
+    }
+
+    @objc func toggleUnloadModel() {
+        unloadModel.toggle()
+        settingsChanged()
+        recognizerQueue.async { [weak self] in
+            guard let self else { return }
+            self.scheduleModelUnload()
+            // Выключили: модель снова всё время в памяти, как до выгрузки.
+            if !self.unloadModel { _ = self.loadedRecognizer() }
+        }
+    }
+
+    /// Выгружает модель после пяти минут простоя. Сработать посреди записи
+    /// не страшно: перед распознаванием модель загрузится снова, а посреди
+    /// распознавания не может, очередь одна. recognizerQueue only.
+    private func scheduleModelUnload() {
+        modelUnload?.cancel()
+        guard unloadModel else { return }
+        let unload = DispatchWorkItem { [weak self] in self?.recognizer = nil }
+        modelUnload = unload
+        recognizerQueue.asyncAfter(deadline: .now() + 300, execute: unload)
+    }
+
+    /// Памяти мало, не ждём таймера. Обработчик идёт через ту же очередь,
+    /// так что посреди распознавания модель не исчезнет.
+    private func watchMemoryPressure() {
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical],
+                                                             queue: recognizerQueue)
+        source.setEventHandler { [weak self] in
+            guard let self, self.unloadModel, self.recognizer != nil else { return }
+            self.recognizer = nil
+            NSLog("Гига Писарь: памяти мало, модель выгружена")
+        }
+        source.resume()
+        memoryPressure = source
     }
 
     /// Модели нет ни в бандле, ни в ~/.giga/model: так бывает у тонкого
@@ -1867,8 +1925,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
             let silent = samples.reduce(Float(0)) { max($0, abs($1)) } <= 0.0015
             var text: String?
             if !silent {
-                do { text = try self?.recognizer?.transcribe(samples: samples, rate: 16000) }
+                do { text = try self?.loadedRecognizer()?.transcribe(samples: samples, rate: 16000) }
                 catch { NSLog("Гига Писарь: не распознал — \(error)") }
+                self?.scheduleModelUnload()
             }
             let output = text
             var corrected = text
