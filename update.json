@@ -1,21 +1,19 @@
 {
-  "version": "3.9.12",
+  "version": "3.9.13",
   "downloads": [
-    "https://gitflic.ru/project/moznoazachem/giga/release/ff6f9f71-0692-4f8c-bd5a-033a67208b35/3e793e02-0255-41ca-bdef-5383fd937655/download",
-    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.12/GigaPisar-3.9.12.zip"
+    "https://gitflic.ru/project/moznoazachem/giga/release/eea8f75f-1691-472f-b867-68e61ab5272c/26278df8-49ad-4b34-a2b6-3fa78e69397c/download",
+    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.13/GigaPisar-3.9.13.zip"
   ],
   "notes": {
     "ru": [
-      "Своё сочетание клавиш для диктовки: любая клавиша с ⌘, ⌥, ⌃ или ⇧, его можно повесить и на кнопку мыши",
-      "Запись с выбранным в настройках микрофоном больше не приходит пустой, старт записи быстрее",
-      "Если Мозг при правке на лету ответил на вопрос вместо правки, вставляется распознанный текст",
-      "⌘W закрывает окна Писаря; переключатель «Вставлять только в исходное поле»"
+      "Закрытое окно настроек больше не грузит процессор и не греет ноутбук",
+      "Порядок микрофонов: Писарь пишет с первого подключённого из списка, а не только с одного выбранного",
+      "Переключатель «Выгружать модель из памяти»: через 5 минут без диктовки освобождает больше ста мегабайт"
     ],
     "en": [
-      "Your own key combination for dictation: any key with ⌘, ⌥, ⌃ or ⇧, it can go on a mouse button too",
-      "Recording with a microphone chosen in Settings no longer comes back empty, and it starts faster",
-      "When the Brain, editing on the fly, answers a question instead of editing, the recognized text is pasted",
-      "⌘W closes Pisar windows; a “Paste only into the original field” switch"
+      "A closed Settings window no longer loads the processor or warms up the laptop",
+      "Microphone order: Pisar records from the first connected one on the list, not just a single chosen one",
+      "An “Unload the Model from Memory” switch: after 5 minutes without dictation it frees over a hundred megabytes"
     ]
   }
 }
