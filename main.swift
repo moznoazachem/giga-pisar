@@ -1411,6 +1411,11 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
         settingsChanged()
     }
 
+    @objc func toggleSkipShort() {
+        Brain.shared.skipShort.toggle()
+        settingsChanged()
+    }
+
     /// The cloud Brain is set up right on the Brain tab of Settings.
     @objc func showBrainServer() { settings.show(tab: .brain) }
 
@@ -2037,7 +2042,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
                     return
                 }
                 // "Edit every take": no address needed, the whole take goes through the Brain.
-                if Brain.shared.everyTake, Brain.shared.ready {
+                if Brain.shared.everyTake, Brain.shared.ready, !Brain.shared.tooShortToEdit(text) {
                     self.pendingOperations += 1
                     Brain.shared.transform(text, command: "исправь") { out in
                         DispatchQueue.main.async {

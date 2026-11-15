@@ -493,6 +493,17 @@ struct BrainPage: View {
                                 .labelsHidden().toggleStyle(.switch).controlSize(.mini)
                         }
                         RowDivider()
+                        if b.everyTake {
+                            SettingsRow(icon: "hare.fill", color: sys(.systemGreen),
+                                        title: L("Короткие без правки", "Short Takes as Dictated"),
+                                        subtitle: L("Диктовка короче \(Brain.skipShortWords) слов вставляется сразу и никуда не отправляется. Команды после слова «Писарь» выполняются всегда.",
+                                                    "A take shorter than \(Brain.skipShortWords) words goes in at once and is sent nowhere. Commands after “Pisar” always run.")) {
+                                Toggle("", isOn: Binding(get: { b.skipShort },
+                                                         set: { _ in model.act { app.toggleSkipShort() } }))
+                                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                            }
+                            RowDivider()
+                        }
                         SettingsRow(icon: "text.cursor", color: sys(.systemOrange),
                                     title: L("Править выделенный текст", "Edit Selected Text"),
                                     subtitle: L("Выдели текст в любой программе, зажми клавишу и скажи, что с ним сделать: «сделай короче», «переведи на английский». ⌘Z вернёт как было.",

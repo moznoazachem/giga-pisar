@@ -333,6 +333,16 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
         get { UserDefaults.standard.bool(forKey: "brainEveryTake") }
         set { UserDefaults.standard.set(newValue, forKey: "brainEveryTake") }
     }
+    /// With "edit on the fly", a take shorter than 12 words goes in as dictated, with no
+    /// request and no wait. On by default, as on Android. Commands always run.
+    var skipShort: Bool {
+        get { UserDefaults.standard.object(forKey: "brainSkipShort") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "brainSkipShort") }
+    }
+    static let skipShortWords = 12
+    func tooShortToEdit(_ text: String) -> Bool {
+        skipShort && text.split(whereSeparator: { $0.isWhitespace }).count < Brain.skipShortWords
+    }
 
     /// Меню перерисовать (и процент скачивания показать) — дергает App.
     var onChange: (() -> Void)?
