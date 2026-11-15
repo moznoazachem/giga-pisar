@@ -156,6 +156,15 @@ struct DictationPage: View {
                         .labelsHidden().toggleStyle(.switch).controlSize(.mini)
                 }
                 RowDivider()
+                SettingsRow(icon: "scissors", color: sys(.systemPink),
+                            title: L("Убирать «э-э» и «м-м»", "Remove “Uh” and “Um”"),
+                            subtitle: L("Вырезает из диктовки звуки-запинки: «э-э», «а-а», «м-м». Работает на самом маке, без Мозга и без интернета.",
+                                        "Cuts hesitation sounds like «э-э», «а-а», «м-м» out of the take. Works on the Mac itself, without the Brain and offline.")) {
+                    Toggle("", isOn: Binding(get: { model.app.dropHesitations },
+                                             set: { _ in model.act { app.toggleDropHesitations() } }))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                }
+                RowDivider()
                 SettingsRow(icon: "doc.on.clipboard", color: sys(.systemTeal),
                             title: L("Оставлять надиктованное в буфере", "Keep Dictation on the Clipboard"),
                             subtitle: L("Текст вставляется как обычно и остаётся в буфере обмена. Удобно для виртуальных машин и удалённых рабочих столов: вставить его там через ⌘V.",

@@ -1927,6 +1927,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
             if !silent {
                 do { text = try self?.loadedRecognizer()?.transcribe(samples: samples, rate: 16000) }
                 catch { NSLog("Гига Писарь: не распознал — \(error)") }
+                if let raw = text, Hesitations.enabled { text = Hesitations.removed(raw) }
                 self?.scheduleModelUnload()
             }
             let output = text
@@ -2256,6 +2257,14 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
 
     @objc func toggleSimpleSyntax() {
         simpleSyntax.toggle()
+        settingsChanged()
+    }
+
+    /// Cut "э-э" and "м-м" out of every take, with the Brain off too (#52). On by default.
+    var dropHesitations: Bool { Hesitations.enabled }
+
+    @objc func toggleDropHesitations() {
+        Hesitations.enabled.toggle()
         settingsChanged()
     }
 
