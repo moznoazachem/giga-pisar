@@ -1,19 +1,17 @@
 {
-  "version": "3.9.13",
+  "version": "3.9.14",
   "downloads": [
-    "https://gitflic.ru/project/moznoazachem/giga/release/eea8f75f-1691-472f-b867-68e61ab5272c/26278df8-49ad-4b34-a2b6-3fa78e69397c/download",
-    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.13/GigaPisar-3.9.13.zip"
+    "https://gitflic.ru/project/moznoazachem/giga/release/8c9599dc-dd55-486c-b565-21259919738d/43563074-cc6b-43e6-af83-1755887a6a3f/download",
+    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.14/GigaPisar-3.9.14.zip"
   ],
   "notes": {
     "ru": [
-      "Закрытое окно настроек больше не грузит процессор и не греет ноутбук",
-      "Порядок микрофонов: Писарь пишет с первого подключённого из списка, а не только с одного выбранного",
-      "Переключатель «Выгружать модель из памяти»: через 5 минут без диктовки освобождает больше ста мегабайт"
+      "«Убирать «э-э» и «м-м»»: звуки-запинки вырезаются из диктовки на самом маке, без Мозга и без интернета",
+      "«Короткие без правки»: при «Править на лету» диктовка короче 12 слов вставляется сразу и никуда не отправляется"
     ],
     "en": [
-      "A closed Settings window no longer loads the processor or warms up the laptop",
-      "Microphone order: Pisar records from the first connected one on the list, not just a single chosen one",
-      "An “Unload the Model from Memory” switch: after 5 minutes without dictation it frees over a hundred megabytes"
+      "“Remove “Uh” and “Um””: hesitation sounds are cut out of the take on the Mac itself, without the Brain and offline",
+      "“Short Takes as Dictated”: with “Edit on the fly” a take shorter than 12 words goes in at once and is sent nowhere"
     ]
   }
 }
