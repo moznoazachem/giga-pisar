@@ -8,13 +8,11 @@ import AppKit
 
 /// Что изменилось в ЭТОЙ версии. Обновлять при каждом выпуске вместе с номером.
 let WHATS_NEW: [String] = uiIsRussian ? [
-    "Закрытое окно настроек больше не грузит процессор и не греет ноутбук",
-    "Порядок микрофонов: Писарь пишет с первого подключённого из списка, а не только с одного выбранного",
-    "Переключатель «Выгружать модель из памяти»: через 5 минут без диктовки освобождает больше ста мегабайт",
+    "«Убирать «э-э» и «м-м»»: звуки-запинки вырезаются из диктовки на самом маке, без Мозга и без интернета",
+    "«Короткие без правки»: при «Править на лету» диктовка короче 12 слов вставляется сразу и никуда не отправляется",
 ] : [
-    "A closed Settings window no longer loads the processor or warms up the laptop",
-    "Microphone order: Pisar records from the first connected one on the list, not just a single chosen one",
-    "An “Unload the Model from Memory” switch: after 5 minutes without dictation it frees over a hundred megabytes",
+    "“Remove “Uh” and “Um””: hesitation sounds are cut out of the take on the Mac itself, without the Brain and offline",
+    "“Short Takes as Dictated”: with “Edit on the fly” a take shorter than 12 words goes in at once and is sent nowhere",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.
