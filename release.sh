@@ -4,7 +4,7 @@
 #   ./release.sh            версия берётся из Info.plist
 # Дальше руками (или по подсказке в конце): тег, GitHub-релиз с zip, dmg
 # и тарболом модели, GitFlic-релиз, update.json.
-set -e
+set -eo pipefail   # a failed notarization must stop the release, not scroll past
 cd "$(dirname "$0")"
 
 VER=$(defaults read "$PWD/Info.plist" CFBundleShortVersionString)
