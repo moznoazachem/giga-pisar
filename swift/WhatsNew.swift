@@ -8,11 +8,13 @@ import AppKit
 
 /// Что изменилось в ЭТОЙ версии. Обновлять при каждом выпуске вместе с номером.
 let WHATS_NEW: [String] = uiIsRussian ? [
-    "«Убирать «э-э» и «м-м»»: звуки-запинки вырезаются из диктовки на самом маке, без Мозга и без интернета",
-    "«Короткие без правки»: при «Править на лету» диктовка короче 12 слов вставляется сразу и никуда не отправляется",
+    "Пока модель распознавания качается, Писарь не записывает впустую, а показывает плашку с причиной",
+    "Мозг не ждёт полторы минуты, если нейронка не запустилась: текст вставляется сразу как распознан",
+    "Обновление строже проверяет описание новой версии",
 ] : [
-    "“Remove “Uh” and “Um””: hesitation sounds are cut out of the take on the Mac itself, without the Brain and offline",
-    "“Short Takes as Dictated”: with “Edit on the fly” a take shorter than 12 words goes in at once and is sent nowhere",
+    "While the speech model is downloading, Pisar no longer records in vain: it shows a notice with the reason",
+    "The Brain no longer waits ninety seconds when it failed to start: the text goes in at once as recognized",
+    "The updater checks the description of a new version more strictly",
 ]
 
 /// Разбор поля notes из манифеста: словарь по языкам, список или строка.
