@@ -26,6 +26,7 @@ SAMPLE_RATE = 16000
 MODEL_NAME = "v3_e2e_rnnt"
 
 MAX_CHUNK = 24.0        # предел одного прохода модели — 25 секунд
+FFMPEG_TIMEOUT = 120    # seconds: a broken file must not hang a request forever
 SILENCE_DB = -35        # порог тишины для нарезки
 SILENCE_MIN = 0.3       # минимальная длина паузы, секунды
 MAX_SYMBOLS_PER_FRAME = 3   # столько букв максимум с одного кадра
@@ -112,14 +113,15 @@ class Features:
 # ─────────────────────────── работа с файлами ───────────────────────────
 
 def ffmpeg(*args) -> None:
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args], check=True)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args],
+                   check=True, timeout=FFMPEG_TIMEOUT)
 
 
 def duration(path: str) -> float:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "default=nw=1:nk=1", path],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, timeout=FFMPEG_TIMEOUT,
     )
     return float(out.stdout.strip())
 
@@ -129,7 +131,7 @@ def find_silences(path: str) -> list:
     out = subprocess.run(
         ["ffmpeg", "-hide_banner", "-i", path, "-af",
          f"silencedetect=noise={SILENCE_DB}dB:d={SILENCE_MIN}", "-f", "null", "-"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=FFMPEG_TIMEOUT,
     )
     points, start = [], None
     for line in out.stderr.splitlines():

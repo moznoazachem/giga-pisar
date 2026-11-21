@@ -35,6 +35,7 @@ import giga_core
 
 HOST = "127.0.0.1"
 PORT = 8737
+MAX_REQUEST = 100 * 1024 * 1024   # a larger body is not read: the answer is 413
 
 
 # ─────────────────────────── режим сервера ───────────────────────────
@@ -93,9 +94,21 @@ def serve(model_dir: str, host: str = HOST, port: int = PORT) -> None:
                 return
             try:
                 длина = int(self.headers.get("Content-Length", 0))
+            except ValueError:
+                длина = -1
+            if длина < 0:
+                self.close_connection = True
+                self._ответ(400, {"error": "нет длины запроса"})
+                return
+            if длина > MAX_REQUEST:
+                self.close_connection = True      # the body stays unread
+                self._ответ(413, {"error": "запись больше 100 МБ"})
+                return
+            try:
                 запись = _разобрать_multipart(
                     self.rfile.read(длина), self.headers.get("Content-Type", ""))
             except Exception as e:
+                self.close_connection = True      # the body may be half-read
                 self._ответ(400, {"error": f"не разобрал запрос: {e}"})
                 return
 
@@ -111,6 +124,7 @@ def serve(model_dir: str, host: str = HOST, port: int = PORT) -> None:
                 print(f"[писарь] сбой распознавания: {e}", file=sys.stderr, flush=True)
                 self._ответ(500, {"error": str(e)})
 
+    Обработчик.timeout = 30                       # a slow client must not hold a thread forever
     ThreadingHTTPServer((host, port), Обработчик).serve_forever()
 
 

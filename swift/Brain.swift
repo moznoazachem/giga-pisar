@@ -808,6 +808,10 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
                 if let s = self?.server, !s.isRunning {
                     self?.lastFailure = L("нейронка упала при запуске, подробности в \(Self.logPath)",
                                           "the brain crashed on start, details in \(Self.logPath)")
+                } else if self?.server == nil {
+                    if self?.lastFailure == nil {
+                        self?.lastFailure = L("нейронка не запустилась", "the brain didn't start")
+                    }
                 } else if Date() >= deadline {
                     self?.lastFailure = L("нейронка не поднялась за полторы минуты",
                                           "the brain didn't come up within 90 seconds")
@@ -831,6 +835,8 @@ final class Brain: NSObject, URLSessionDownloadDelegate {
         URLSession.shared.dataTask(with: req) { data, _, _ in
             if let s = self.server, !s.isRunning {
                 done(false)                       // our server died (maybe the port is taken): never trust whoever answers
+            } else if self.server == nil {
+                done(false)                       // it never started: nothing to wait for (#57)
             } else if self.server != nil, let data, String(data: data, encoding: .utf8)?.contains("ok") == true {
                 done(true)
             } else if Date() < deadline {

@@ -191,7 +191,13 @@ enum SelfUpdate {
     private static func install(zipFile: URL, version: String, dest: String,
                                 ready: @escaping () -> Void, bail: (String) -> Void) {
         let fm = FileManager.default
-        let dir = NSTemporaryDirectory() + "giga-update-\(version)"
+        // The version comes from update.json and ends up in a path that is
+        // removed before any signature check: keep digits and dots only (#53).
+        let safe = version.filter { $0.isASCII && ($0.isNumber || $0 == ".") }
+        guard !safe.isEmpty, !safe.contains("..") else {
+            bail(L("в описании обновления странный номер версии", "the update manifest has a malformed version")); return
+        }
+        let dir = NSTemporaryDirectory() + "giga-update-\(safe)"
         try? fm.removeItem(atPath: dir)
         do {
             try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)

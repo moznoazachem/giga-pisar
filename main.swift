@@ -1172,7 +1172,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
     /// любые обновления (swap.sh её ещё и подстраховывает).
     func complainNoModel() {
         // Во время знакомства про это написано прямо в окне.
-        guard !setupRunning else { return }
+        guard !setupRunning, !askingForModel else { return }
+        askingForModel = true
+        defer { askingForModel = false }
         let a = NSAlert()
         a.messageText = L("Остался один шаг — модель распознавания",
                           "One last piece — the speech model")
@@ -1238,6 +1240,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
 
     private func unpackSpeechModel(_ file: URL) {
         modelWindow.onCancel = nil
+        modelUnpacking = true
         if setupShowsProgress {
             setup.state.note = L("Распаковываю…", "Unpacking…")
         } else {
@@ -1249,6 +1252,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
             guard sha256Hex(ofFile: file.path) == "e5a75ab56ab6d3f3a70ab17dd1ce858fe8180597963839dc806014447483224c" else {
                 try? FileManager.default.removeItem(at: file)
                 DispatchQueue.main.async {
+                    self?.modelUnpacking = false
                     self?.modelWindow.hide()
                     Toast.shared.show(L("Модель скачалась повреждённой, попробуй ещё раз",
                                         "The model arrived damaged, try again"))
@@ -1268,6 +1272,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
             try? FileManager.default.removeItem(at: file)
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.modelUnpacking = false
                 self.modelWindow.hide()
                 if ok {
                     self.loadModel()
@@ -1655,8 +1660,26 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
 
     // MARK: запись (родной AVAudioRecorder, 16 кГц моно wav)
 
+    /// No speech model on disk: a take would be recorded and then lost,
+    /// so recording does not start at all. Says why, or offers the download.
+    private func refuseWithoutModel() -> Bool {
+        guard findModelDir() == nil else { return false }
+        if modelDL != nil || modelUnpacking {
+            Toast.shared.show(L("Модель распознавания ещё качается. Диктовка заработает, как только она скачается.",
+                                "The speech model is still downloading. Dictation will work as soon as it is here."))
+        } else {
+            complainNoModel()
+        }
+        return true
+    }
+    /// The download offer is on screen: a second one must not pile on top. Main-queue only.
+    private var askingForModel = false
+    /// Downloaded and being unpacked: the files are not all on disk yet. Main-queue only.
+    private var modelUnpacking = false
+
     func startRecording() {
         guard !mic.isRecording else { return }
+        guard !refuseWithoutModel() else { return }
         let start = recordingStart.schedule { [weak self] in
             guard let self, self.rightCmdDown || self.locked else { return }
             self.beginRecording()
