@@ -1,17 +1,19 @@
 {
-  "version": "3.9.14",
+  "version": "3.9.15",
   "downloads": [
-    "https://gitflic.ru/project/moznoazachem/giga/release/8c9599dc-dd55-486c-b565-21259919738d/43563074-cc6b-43e6-af83-1755887a6a3f/download",
-    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.14/GigaPisar-3.9.14.zip"
+    "https://gitflic.ru/project/moznoazachem/giga/release/29e74e8f-ba1a-4156-aeab-b6397f8427de/48d4baae-1741-45f5-9585-015f482ef817/download",
+    "https://github.com/moznoazachem/giga-pisar/releases/download/v3.9.15/GigaPisar-3.9.15.zip"
   ],
   "notes": {
     "ru": [
-      "«Убирать «э-э» и «м-м»»: звуки-запинки вырезаются из диктовки на самом маке, без Мозга и без интернета",
-      "«Короткие без правки»: при «Править на лету» диктовка короче 12 слов вставляется сразу и никуда не отправляется"
+      "Пока модель распознавания качается, Писарь не записывает впустую, а показывает плашку с причиной",
+      "Мозг не ждёт полторы минуты, если нейронка не запустилась: текст вставляется сразу как распознан",
+      "Обновление строже проверяет описание новой версии"
     ],
     "en": [
-      "“Remove “Uh” and “Um””: hesitation sounds are cut out of the take on the Mac itself, without the Brain and offline",
-      "“Short Takes as Dictated”: with “Edit on the fly” a take shorter than 12 words goes in at once and is sent nowhere"
+      "While the speech model is downloading, Pisar no longer records in vain: it shows a notice with the reason",
+      "The Brain no longer waits ninety seconds when it failed to start: the text goes in at once as recognized",
+      "The updater checks the description of a new version more strictly"
     ]
   }
 }
