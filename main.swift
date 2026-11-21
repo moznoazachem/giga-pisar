@@ -190,10 +190,11 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
     var lastText: String?
     private var recoveredTakes: [Int: [String]] = [:] // memory only; never logged
     /// When each take was recognized and what the mic heard (16 kHz mono),
-    /// for the History page. Memory only, trimmed together with recoveredTakes.
+    /// for the opt-in History page. Independent of the recovery buffer; memory only.
+    private var historyTakes: [Int: [String]] = [:]
     private var takeDates: [Int: Date] = [:]
     private var takeAudio: [Int: [Int16]] = [:]
-    private func saveDictation(_ text: String, take current: Int) {
+    private func saveDictation(_ text: String, take current: Int, audio: [Float]? = nil) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         var versions = recoveredTakes[current] ?? []
@@ -201,18 +202,45 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
         // Keep the raw text even after many Brain transformations.
         if versions.count > 10 { versions.remove(at: 1) }
         recoveredTakes[current] = versions
-        if takeDates[current] == nil { takeDates[current] = Date() }
         // With "remember" off only the latest take stays, for Copy Last Dictation.
         let keep = rememberDictations ? 20 : 1
         for key in recoveredTakes.keys.sorted().dropLast(keep) { recoveredTakes.removeValue(forKey: key) }
-        trimTakeExtras()
+        if historyEnabled {
+            var historyVersions = historyTakes[current] ?? []
+            if !historyVersions.contains(text) { historyVersions.append(text) }
+            if historyVersions.count > 10 { historyVersions.remove(at: 1) }
+            historyTakes[current] = historyVersions
+            if takeDates[current] == nil { takeDates[current] = Date() }
+            if historyAudioEnabled, let audio {
+                takeAudio[current] = audio.map { Int16(max(-1, min(1, $0)) * 32767) }
+            }
+            for key in historyTakes.keys.sorted().dropLast(20) { historyTakes.removeValue(forKey: key) }
+            trimTakeExtras()
+        }
         copyLastItem?.isEnabled = true
         refreshRecoveryWindow()
     }
 
     private func trimTakeExtras() {
-        takeDates = takeDates.filter { recoveredTakes[$0.key] != nil }
-        takeAudio = takeAudio.filter { recoveredTakes[$0.key] != nil }
+        takeDates = takeDates.filter { historyTakes[$0.key] != nil }
+        takeAudio = takeAudio.filter { historyTakes[$0.key] != nil }
+    }
+
+    /// Independent from upstream's Recent Dictations / Copy Last recovery buffer.
+    var historyEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "historyEnabled") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "historyEnabled")
+            if !newValue { historyTakes = [:]; trimTakeExtras() }
+        }
+    }
+
+    var historyAudioEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: "historyAudioEnabled") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "historyAudioEnabled")
+            if !newValue { takeAudio = [:] }
+        }
     }
 
     struct DictationRecord: Identifiable {
@@ -225,8 +253,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
 
     /// Takes for the History page, newest first.
     var dictationHistory: [DictationRecord] {
-        recoveredTakes.keys.sorted().reversed().map { take in
-            DictationRecord(take: take, date: takeDates[take] ?? Date(), versions: recoveredTakes[take] ?? [],
+        historyTakes.keys.sorted().reversed().map { take in
+            DictationRecord(take: take, date: takeDates[take] ?? Date(), versions: historyTakes[take] ?? [],
                             seconds: takeAudio[take].map { Double($0.count) / 16000 })
         }
     }
@@ -248,10 +276,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
     /// History's "Improve": the take's latest text through the Brain, as if it
     /// ended with "Писарь, исправь". The result becomes the take's newest version.
     func improveDictation(take current: Int, done: @escaping () -> Void) {
-        guard let text = recoveredTakes[current]?.last, Brain.shared.ready else { done(); return }
+        guard let text = historyTakes[current]?.last, Brain.shared.ready else { done(); return }
         Brain.shared.transform(text, command: "исправь") { out in
             DispatchQueue.main.async {
-                if let out { self.saveDictation(out, take: current) }
+                if let out, self.historyTakes[current] != nil { self.saveDictation(out, take: current) }
                 done()
             }
         }
@@ -271,7 +299,6 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
         rememberDictations.toggle()
         if !rememberDictations, let latest = recoveredTakes.keys.max() {
             recoveredTakes = recoveredTakes.filter { $0.key == latest }
-            trimTakeExtras()
         }
         refreshRecoveryWindow()
         settingsChanged()
@@ -280,6 +307,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
     /// Forget every dictation at once, the latest one too.
     @objc func clearDictations() {
         recoveredTakes = [:]
+        historyTakes = [:]
         trimTakeExtras()
         lastText = nil
         copyLastItem?.isEnabled = false
@@ -2000,7 +2028,6 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
                 corrected = rules.apply(raw)
                 dictionaryProblem = problem
             }
-            let pcm = samples.map { Int16(max(-1, min(1, $0)) * 32767) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.pendingOperations -= 1
@@ -2014,10 +2041,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
                     } else if self.state == .idle, !self.recordingInProgress { self.flashError() }
                     return
                 }
-                self.takeAudio[self.take] = pcm   // kept only if a text gets saved for this take
                 if let body = Brain.cancelledBody(output) {
                     // Said "Писарь, отмена": paste nothing, but keep the words recoverable.
-                    if !body.isEmpty { self.saveDictation(body, take: self.take) }
+                    if !body.isEmpty { self.saveDictation(body, take: self.take, audio: samples) }
                     self.refreshWorkState()
                     Toast.shared.show(body.isEmpty
                         ? L("Отменено", "Canceled")
@@ -2033,7 +2059,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextViewDe
                     Toast.shared.show(L("Словарь не прочитан, работают прежние правила: \(problem)",
                                         "Dictionary not loaded, previous rules stay: \(problem)"))
                 }
-                self.saveDictation(output, take: self.take)
+                self.saveDictation(output, take: self.take, audio: samples)
                 let text = corrected ?? output
                 if text != output { self.saveDictation(text, take: self.take) }
                 self.deliverTranscription(text, take: self.take)

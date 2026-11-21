@@ -49,6 +49,32 @@ struct HistoryPage: View {
     var body: some View {
         let records = model.app.dictationHistory
         VStack(spacing: 18) {
+            SettingsCard {
+                SettingsRow(icon: "clock.arrow.circlepath", color: Color(nsColor: .systemIndigo),
+                            title: L("Хранить историю", "Keep History"),
+                            subtitle: L("До 20 диктовок, только пока Писарь запущен. Выключение стирает историю. Последние диктовки в разделе «Диктовка» хранятся отдельно.",
+                                        "Up to 20 takes, only while Pisar is running. Turning off erases History. Recent Dictations in Dictation are kept separately.")) {
+                    Toggle("", isOn: Binding(get: { model.app.historyEnabled }, set: { value in
+                        player.stop()
+                        model.act { model.app.historyEnabled = value }
+                    }))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                    .accessibilityLabel(L("Хранить историю", "Keep History"))
+                }
+                RowDivider()
+                SettingsRow(icon: "waveform", color: Color(nsColor: .systemBlue),
+                            title: L("Хранить звук", "Keep Audio"),
+                            subtitle: L("Для прослушивания новых диктовок. Только в памяти; выключение стирает сохранённый звук.",
+                                        "Replay new takes. Memory only; turning off erases retained audio.")) {
+                    Toggle("", isOn: Binding(get: { model.app.historyAudioEnabled }, set: { value in
+                        player.stop()
+                        model.act { model.app.historyAudioEnabled = value }
+                    }))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                    .accessibilityLabel(L("Хранить звук", "Keep Audio"))
+                }
+                .disabled(!model.app.historyEnabled)
+            }
             if !records.isEmpty {
                 SettingsCard {
                     ForEach(Array(records.enumerated()), id: \.element.id) { i, record in
@@ -57,6 +83,9 @@ struct HistoryPage: View {
                     }
                 }
             }
+        }
+        .onChange(of: records.map(\.id)) { ids in
+            if let playing = player.playing, !ids.contains(playing) { player.stop() }
         }
         .onDisappear { player.stop() }
     }
